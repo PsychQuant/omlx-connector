@@ -1,0 +1,10 @@
+.build/
+.swiftpm/
+*.xcodeproj
+.DS_Store
+
+# Built artifacts: the binary and packed bundle are release assets, not sources.
+mcpb/server/*
+!mcpb/server/.gitkeep
+mcpb/*.mcpb
+mcpb/*.sha256
