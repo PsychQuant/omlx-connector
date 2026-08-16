@@ -4,31 +4,65 @@ An MCP server that lets Claude Code, Codex, and other MCP clients delegate text 
 to a model running on **your own machine** via [oMLX](https://github.com/jundot/omlx),
 so that content which must not leave the machine never reaches a cloud API.
 
-## What this is (and what it is not)
+## Two ways to use a local model, and which one this is
 
-There are two ways to combine a coding agent with a local model, and they point in
-opposite directions.
+The question that separates them is **who answers you**.
 
-**Running the agent itself on a local model** is what `omlx launch claude` does. That
-is not this project.
+| | **Usage 1** | **Usage 2** |
+|---|---|---|
+| How you start it | `omlx launch claude` (or `bin/claude-local`) | install the MCP server |
+| **Who answers you** | **the local model** | **Claude** |
+| The local model is | the agent itself | a tool the agent calls |
+| Claude involved? | no | yes |
+| Works offline | yes | no (the agent still needs the network) |
+| What you give up | frontier-model reasoning | nothing, except latency on the delegated part |
 
-**Delegating specific tasks to a local model** is this project. The agent keeps
-running on whatever frontier model you normally use; only the pieces that must stay
-on your hardware are routed to oMLX.
+**Usage 1 — the local model is the agent.** Claude Code becomes an interface to
+Qwen (or whatever you loaded). Nothing you type reaches Anthropic. Everything runs
+at the local model's ability, which is the real cost: see
+[Choosing a model](#choosing-a-model) for two failure modes that are easy to miss.
+
+**Usage 2 — Claude answers, and hands over what must stay local.** This is what the
+MCP server does. You keep frontier-model reasoning for the work that benefits from
+it, and route only the material that cannot leave the machine to oMLX.
 
 ```
-Claude Code / Codex  (cloud model)
-        │
-        │  MCP tool call
-        ▼
-   omlx-connector  ──HTTP──▶  127.0.0.1:8000 (oMLX)  ──▶  local model
-        │
-        └─ the content never leaves this machine
+Usage 1                          Usage 2
+                                 Claude Code  (cloud model)
+Claude Code  ──▶  oMLX                 │  MCP tool call
+   (the CLI)      (answers you)        ▼
+                                  omlx-connector ──▶ oMLX
+                                       │
+                                       └─ only this part stays local
 ```
 
-The motivating case: material you are contractually or ethically barred from sending
-to a third party — recordings and transcripts of other people, unpublished research,
-student or client records — but which still needs summarizing, cleaning up, or sorting.
+The motivating case for usage 2: material you are contractually or ethically barred
+from sending to a third party — recordings and transcripts of other people,
+unpublished research, student or client records — but which still needs summarizing,
+cleaning up, or sorting. Usage 1 would also keep it local, but at the price of doing
+*all* your work on the smaller model.
+
+### On `bin/claude-local` (usage 1)
+
+`omlx launch claude` is oMLX's own command and is the official way to do usage 1.
+`bin/claude-local` is **not official** — it is a wrapper around that same command,
+here because the official path currently breaks for a common configuration:
+
+- If your `~/.claude/settings.json` sets `ANTHROPIC_BASE_URL` (any gateway, proxy,
+  or rate-limiting plugin does), it **overrides** the launcher's value, because
+  Claude Code ranks a settings-file `env` block above inherited environment
+  variables. Requests leave for whatever that points at and you get
+  `401 Invalid bearer token` — while the oMLX log shows nothing arrived
+  ([jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715)).
+- On plans where Opus is auto-upgraded to a 1M context window, the model ID gains a
+  `[1m]` suffix, and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` stops applying
+  ([jundot/omlx#2716](https://github.com/jundot/omlx/issues/2716)).
+
+The wrapper passes the same values through `--settings` — a documented Claude Code
+CLI argument, which outranks user settings and applies to that launch only — and
+sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`. Your own config is never modified. **If
+those two issues are fixed upstream, this file should be deleted**; it exists to
+make the official path work, not to replace it.
 
 ## The loopback guarantee
 
@@ -117,6 +151,30 @@ cd omlx-connector
 make install     # builds and ad-hoc signs into ~/bin
 make test
 ```
+
+### Usage 1 — running the agent itself on a local model
+
+Everything above installs the MCP server, which is usage 2. Usage 1 needs no
+install: it is oMLX's own command.
+
+```bash
+omlx launch claude --model <model-id>
+```
+
+If that gives you `401 Invalid bearer token` while the oMLX log shows no incoming
+request, you are hitting [#2715](https://github.com/jundot/omlx/issues/2715). Until
+it is fixed, use the wrapper in this repo, which works around it and
+[#2716](https://github.com/jundot/omlx/issues/2716) without touching your config:
+
+```bash
+cp bin/claude-local ~/bin/ && chmod +x ~/bin/claude-local
+claude-local --model <model-id>
+```
+
+The model must have a context window of **at least 48K** — Claude Code refuses
+smaller ones outright, which rules out some otherwise capable models (`Qwen3-32B` is
+40,960 and cannot be used). Run `local_models`, or check `max_context_window` at
+`/v1/models/status`, before picking.
 
 ## Tools
 
