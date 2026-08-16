@@ -6,7 +6,7 @@ import Foundation
 /// (mcpb/manifest.json, plugin/.claude-plugin/plugin.json,
 /// .claude-plugin/marketplace.json).
 enum AppVersion {
-    static let current = "0.1.0"
+    static let current = "0.2.0"
 
     /// Binary / product name. MUST equal the on-disk filename in ~/bin.
     static let name = "OmlxConnectorMCP"

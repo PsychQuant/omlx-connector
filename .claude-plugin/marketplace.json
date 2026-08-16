@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "omlx-connector",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Delegate text work to a local model on oMLX — summarize, rewrite, and classify content that must not leave your machine",
       "author": { "name": "Che Cheng" },
       "source": "./plugin",

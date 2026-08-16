@@ -3,5 +3,11 @@
 *.xcodeproj
 .DS_Store
 
-# Release artifacts: the signed binary is a GitHub release asset, not a source file.
+# Release artifacts: signed binary and packed bundle are GitHub release assets,
+# not sources. The mcpb/server/ directory itself is tracked so `mcpb pack` has a
+# place to put the binary on a fresh clone.
 dist/
+mcpb/server/*
+!mcpb/server/.gitkeep
+mcpb/*.mcpb
+mcpb/*.mcpb.sha256

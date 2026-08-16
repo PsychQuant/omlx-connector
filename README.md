@@ -64,6 +64,12 @@ claude plugin install omlx-connector@omlx-connector
 The plugin fetches the signed binary on first use and keeps it pinned to the
 plugin's version. Restart Claude Code afterwards so the server loads.
 
+### Claude Desktop
+
+Download `omlx-connector-<version>.mcpb` from
+[Releases](https://github.com/PsychQuant/omlx-connector/releases/latest) and open it.
+The bundle carries the signed binary, so there is nothing else to install.
+
 ### Manual
 
 The release binary is signed with a Developer ID and notarized by Apple, so it runs
@@ -121,6 +127,14 @@ make test
 | `local_classify` | Assign text to one of a set of categories |
 | `local_complete` | Arbitrary prompt; the escape hatch |
 | `local_models` | List available models, context windows, and what is loaded |
+
+The Claude Code plugin also ships a `local-delegation` skill, which gives the agent a
+test for deciding *when* work belongs on a local model rather than leaving it to
+guess from tool names. The short version: ask whose words the text is. Someone else's
+own words — a recording of them, a message they wrote, their submission or file — were
+given to you for a purpose, and sending them to a third-party service is not a
+decision you can make on their behalf. Your own writing, and your own summary of
+theirs, carry no such constraint.
 
 ### Reasoning is off by default
 

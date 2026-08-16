@@ -1,0 +1,13 @@
+# mcpb/ doubles as the `mcpb pack` source dir and the build output dir, so previous
+# releases' artifacts live here alongside the files meant to go into the archive.
+#
+# The load-bearing line is *.mcpb.sha256: mcpb 2.1.2's built-in EXCLUDE_PATTERNS
+# already drops *.mcpb, but NOT its companion checksum — without this, every release
+# ships the previous version's stray .sha256 inside the new bundle.
+# *.mcpb is kept as defense-in-depth: redundant with the current default, but it
+# states the intent and survives a future mcpb that drops that default.
+*.mcpb
+*.mcpb.sha256
+
+# Placeholder that only exists so the directory survives a fresh clone.
+.gitkeep

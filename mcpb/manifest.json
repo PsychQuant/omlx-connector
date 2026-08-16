@@ -1,0 +1,65 @@
+{
+  "manifest_version": "0.3",
+  "name": "omlx-connector",
+  "display_name": "oMLX Connector",
+  "version": "0.2.0",
+  "description": "Delegate text work to a local model on oMLX — content never leaves your machine",
+  "long_description": "Lets Claude and other MCP clients hand off text work to a model running locally via oMLX, so material that must not be sent to a cloud API — recordings and transcripts of other people, unpublished research, client or student records — can still be summarized, rewritten, and classified. The server refuses non-loopback hosts unless explicitly permitted, so the privacy property is enforced in code rather than promised in documentation. Requires macOS on Apple silicon and a running oMLX server.",
+  "author": {
+    "name": "Che Cheng",
+    "url": "https://github.com/PsychQuant"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PsychQuant/omlx-connector.git"
+  },
+  "homepage": "https://github.com/PsychQuant/omlx-connector",
+  "support": "https://github.com/PsychQuant/omlx-connector/issues",
+  "keywords": [
+    "mcp",
+    "omlx",
+    "mlx",
+    "local-llm",
+    "privacy",
+    "apple-silicon",
+    "offline"
+  ],
+  "license": "MIT",
+  "privacy_policies": [
+    "https://github.com/PsychQuant/omlx-connector/blob/main/mcpb/PRIVACY.md"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/OmlxConnectorMCP",
+    "mcp_config": {
+      "command": "${__dirname}/server/OmlxConnectorMCP",
+      "args": [],
+      "env": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "local_summarize",
+      "description": "Summarize text on a local model, with a sentence budget and optional focus"
+    },
+    {
+      "name": "local_rewrite",
+      "description": "Rewrite text per an instruction on a local model — ASR cleanup, tone, formatting"
+    },
+    {
+      "name": "local_classify",
+      "description": "Assign text to one of a set of categories using a local model"
+    },
+    {
+      "name": "local_complete",
+      "description": "Send an arbitrary prompt to a local model; reasoning optional"
+    },
+    {
+      "name": "local_models",
+      "description": "List available local models, their context windows, and which are loaded"
+    }
+  ],
+  "compatibility": {
+    "platforms": ["darwin"]
+  }
+}
