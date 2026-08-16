@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "omlx-connector",
+  "description": "Self-hosted marketplace for omlx-connector, co-located with its source.",
+  "owner": { "name": "Che Cheng" },
+  "homepage": "https://github.com/PsychQuant/omlx-connector",
+  "plugins": [
+    {
+      "name": "omlx-connector",
+      "version": "0.1.0",
+      "description": "Delegate text work to a local model on oMLX — summarize, rewrite, and classify content that must not leave your machine",
+      "author": { "name": "Che Cheng" },
+      "source": "./plugin",
+      "category": "productivity"
+    }
+  ]
+}

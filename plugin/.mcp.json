@@ -1,0 +1,7 @@
+{
+  "omlx": {
+    "type": "stdio",
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/omlx-connector-wrapper.sh",
+    "description": "Delegate text work to a local model on oMLX — content never leaves this machine"
+  }
+}
