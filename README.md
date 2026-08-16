@@ -54,10 +54,25 @@ another machine you own — and requires a deliberate act to enable.
 
 ## Install
 
+### Claude Code (recommended)
+
 ```bash
-git clone https://github.com/PsychQuant/omlx-connector.git
-cd omlx-connector
-make install          # builds and puts OmlxConnectorMCP in ~/bin
+claude plugin marketplace add PsychQuant/omlx-connector
+claude plugin install omlx-connector@omlx-connector
+```
+
+The plugin fetches the signed binary on first use and keeps it pinned to the
+plugin's version. Restart Claude Code afterwards so the server loads.
+
+### Manual
+
+The release binary is signed with a Developer ID and notarized by Apple, so it runs
+without a Gatekeeper prompt.
+
+```bash
+curl -sL https://github.com/PsychQuant/omlx-connector/releases/latest/download/OmlxConnectorMCP \
+  -o ~/bin/OmlxConnectorMCP
+chmod +x ~/bin/OmlxConnectorMCP
 OmlxConnectorMCP --ping
 ```
 
@@ -70,7 +85,7 @@ models:  41 available
 loaded:  none (first call will pay a cold start)
 ```
 
-### Claude Code
+Then register it:
 
 ```bash
 claude mcp add omlx -- ~/bin/OmlxConnectorMCP
@@ -84,6 +99,17 @@ In `~/.codex/config.toml`:
 [mcp_servers.omlx]
 command = "/Users/you/bin/OmlxConnectorMCP"
 args = []
+```
+
+The same server serves both clients; nothing extra is needed for Codex.
+
+### From source
+
+```bash
+git clone https://github.com/PsychQuant/omlx-connector.git
+cd omlx-connector
+make install     # builds and ad-hoc signs into ~/bin
+make test
 ```
 
 ## Tools
