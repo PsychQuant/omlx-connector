@@ -1,8 +1,10 @@
 {
   "name": "omlx-connector",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Delegate text work to a local model on oMLX — summarize, rewrite, and classify content that must not leave your machine",
-  "author": { "name": "Che Cheng" },
+  "author": {
+    "name": "Che Cheng"
+  },
   "homepage": "https://github.com/PsychQuant/omlx-connector",
   "repository": "https://github.com/PsychQuant/omlx-connector",
   "license": "MIT",

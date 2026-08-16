@@ -2,11 +2,11 @@ import Foundation
 
 /// Single source of truth for version and identity strings.
 ///
-/// `scripts/build-mcpb.sh` hard-fails if any mirror of these values drifts
+/// `scripts/build-release.sh` hard-fails if any mirror of these values drifts
 /// (mcpb/manifest.json, plugin/.claude-plugin/plugin.json,
 /// .claude-plugin/marketplace.json).
 enum AppVersion {
-    static let current = "0.2.0"
+    static let current = "0.2.1"
 
     /// Binary / product name. MUST equal the on-disk filename in ~/bin.
     static let name = "OmlxConnectorMCP"
