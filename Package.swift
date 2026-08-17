@@ -7,7 +7,10 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "OmlxConnectorMCP", targets: ["OmlxConnectorMCP"])
+        .executable(name: "OmlxConnectorMCP", targets: ["OmlxConnectorMCP"]),
+        // The product name is the on-disk filename. The target keeps Swift's
+        // PascalCase; the command users type is hyphenated.
+        .executable(name: "omlx-claude", targets: ["OmlxClaude"]),
     ],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", .upToNextMinor(from: "0.12.0"))
@@ -32,11 +35,19 @@ let package = Package(
             ],
             path: "Sources/OmlxConnectorMCP"
         ),
+        // Usage 1: the local model is the agent. A thin layer over
+        // `omlx launch claude`, which it execs into rather than replacing.
+        .executableTarget(
+            name: "OmlxClaude",
+            dependencies: ["OmlxConnectorCore"],
+            path: "Sources/OmlxClaude"
+        ),
         .testTarget(
             name: "OmlxConnectorMCPTests",
             dependencies: [
                 "OmlxConnectorCore",
                 "OmlxConnectorMCP",
+                "OmlxClaude",
                 // Declared explicitly: tests construct `Value` arguments directly,
                 // and a transitive dependency is not importable.
                 .product(name: "MCP", package: "swift-sdk")
