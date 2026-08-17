@@ -167,3 +167,50 @@ final class ArgparseAbbreviationTests: XCTestCase {
         XCTAssertEqual(ProbeTarget.value(of: "--host", in: ["--host", "h"]), "h")
     }
 }
+
+/// Round 3 found the gate was a string test, not an address test, and that the
+/// near-miss fixtures above could not have caught it: every one of them breaks on the
+/// character immediately after `127` (`x`, `0`), so none exercises a legitimate dot.
+///
+/// These cases are written to fail against `hasPrefix("127.")`. If a future change
+/// makes them pass without also passing `testRejectsRemoteAndNearMisses`, the gate has
+/// regressed to text matching again.
+final class LoopbackIsAddressNotTextTests: XCTestCase {
+
+    func testRegistrableNamesBeginningWith127AreNotLoopback() {
+        // RFC 1123 permits a DNS label to start with a digit, so every one of these is
+        // an ordinary hostname an attacker can register and point anywhere.
+        for host in ["127.evil.example", "127.0.0.1.attacker.example",
+                     "127.attacker.tld", "127.0.0.1.evil.com"] {
+            XCTAssertFalse(LoopbackPolicy.isLoopback(host), "\(host) is a DNS name, not 127/8")
+        }
+    }
+
+    func testEveryLoopbackAddressInThe127Block() {
+        for host in ["127.0.0.1", "127.1.2.3", "127.255.255.254", "127.0.0.53"] {
+            XCTAssertTrue(LoopbackPolicy.isLoopback(host), "\(host) is in 127/8")
+        }
+    }
+
+    func testIPv6LoopbackInEverySpelling() {
+        // Matching `::1` by string equality refused every other spelling of the same
+        // address, which sent users to OMLX_ALLOW_REMOTE for a loopback host.
+        for host in ["::1", "[::1]", "0:0:0:0:0:0:0:1", "0000:0000:0000:0000:0000:0000:0000:0001"] {
+            XCTAssertTrue(LoopbackPolicy.isLoopback(host), "\(host) is ::1")
+        }
+    }
+
+    func testIPv4MappedLoopbackIsLoopback() {
+        // ::ffff:127.0.0.1 reaches 127.0.0.1. Treating it as remote would be merely
+        // annoying; treating a mapped *remote* address as local would not be.
+        XCTAssertTrue(LoopbackPolicy.isLoopback("::ffff:127.0.0.1"))
+        XCTAssertFalse(LoopbackPolicy.isLoopback("::ffff:8.8.8.8"))
+    }
+
+    func testNonLoopbackAddressesAndNamesStayRefused() {
+        for host in ["128.0.0.1", "126.255.255.255", "0.0.0.0", "::",
+                     "10.0.0.1", "api.openai.com", "localhost.evil.example"] {
+            XCTAssertFalse(LoopbackPolicy.isLoopback(host), "\(host) must not be loopback")
+        }
+    }
+}

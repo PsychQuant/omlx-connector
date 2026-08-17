@@ -4,7 +4,7 @@ BINARY_NAME := OmlxConnectorMCP
 # language mode only if an upstream dependency trips strict concurrency.
 FALLBACK_FLAGS := $(shell swift build 2>&1 | grep -q "SendingRisksDataRace" && echo "-Xswiftc -swift-version -Xswiftc 5")
 
-.PHONY: build release release-signed verify-developer-id install install-omlx-claude install-signed clean test ping
+.PHONY: build release release-signed verify-developer-id install install-omlx-claude install-signed clean test test-swift test-shell ping
 
 build:
 	swift build $(FALLBACK_FLAGS)
@@ -12,8 +12,17 @@ build:
 release:
 	swift build -c release $(FALLBACK_FLAGS)
 
-test:
+## Swift tests plus the shell suites. The shell ones are not optional extras: the
+## download verification and the "no unverified downloads anywhere in plugin/" property
+## are only expressible there, and both exist because a defect survived a review round
+## by being fixed in one file.
+test: test-swift test-shell
+
+test-swift:
 	swift test $(FALLBACK_FLAGS)
+
+test-shell:
+	@for suite in scripts/tests/*.test.sh; do bash "$$suite" || exit 1; done
 
 ## Reachability check against the configured oMLX server.
 ping: build
