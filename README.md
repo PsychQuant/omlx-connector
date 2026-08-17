@@ -71,8 +71,11 @@ What the layer adds:
   at, and you get `401 Invalid bearer token` while the oMLX log shows nothing
   arrived ([jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715)).
   `omlx-claude` re-asserts those keys through `--settings`, a CLI argument, which
-  outranks user settings and applies to that launch only. Your own config is never
-  modified.
+  outranks the user, project and local settings files and applies to that launch only.
+  Your own config is never modified. **One scope still beats it:** managed (MDM/policy)
+  settings outrank command-line arguments, so on a managed Mac a policy
+  `ANTHROPIC_BASE_URL` wins over everything here. The command warns when it can see such
+  a key; it cannot override it.
 - **More than the endpoint.** `API_TIMEOUT_MS` is in the override too, and it is not
   decoration: the launcher sets it to 3,000,000 because a cold model load alone can
   outlast a normal timeout, and a settings file that shadows it aborts inference
@@ -119,9 +122,12 @@ here is asserted into ANTHROPIC_BASE_URL at a higher precedence than anything el
 so the whole session, and the API token, would go there.
 ```
 
-The host is **parsed as an address**, not matched as text — `127.evil.example` is an
-ordinary registrable DNS name, and a check that accepted it because of how it is spelled
-would be no check at all.
+The host must be an address **in its canonical form**. Parsing alone was not enough:
+`127.evil.example` is an ordinary registrable DNS name that a text check accepted, and
+`0127.13.37.42` is one that `inet_pton` accepted as 127.13.37.42 while the resolver and
+Claude Code's URL parser both read it as 87.13.37.42. Requiring the canonical spelling
+refuses anything two parsers could disagree about, so the gate never has to predict which
+one runs next.
 
 This is enforced in code rather than promised in documentation, because a privacy
 property that depends on nobody mis-editing a config file is not a privacy property.

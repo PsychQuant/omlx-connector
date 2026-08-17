@@ -38,7 +38,12 @@ the exec at the end.
 The settings override splits deliberately in two, and the split is the interesting
 part. Keys we can determine independently are re-asserted through `--settings` (a
 CLI argument, so it outranks the user's `settings.json` — that is the whole
-mechanism against [#2715](https://github.com/jundot/omlx/issues/2715)). Keys whose
+mechanism against [#2715](https://github.com/jundot/omlx/issues/2715)). **It does not
+outrank managed/MDM policy settings**, which sit above command-line arguments; on a
+managed Mac #2715 is not worked around and the loopback gate will have verified an address
+the session does not use. Those paths are scanned so the conflict is at least named — see
+`LaunchSettings.settingsScopePaths`. Any text here claiming `--settings` "outranks
+everything" is wrong; five such claims had to be corrected at once.) Keys whose
 values depend on which model oMLX ends up serving are **reported, not guessed**: see
 `LaunchSettings.modelDependentKeys`. Moving one from the second list to the first
 means reimplementing oMLX's model selection, which is the fork above.
@@ -166,12 +171,29 @@ Conventions worth keeping:
 premise is that content stays on the machine. Tests cover it, including that the opt-in
 accepts *only* `1` (so a stray `true` does not open the door).
 
-**It parses the address; it does not match the spelling.** The check was once
-`hasPrefix("127.")`, and RFC 1123 permits a DNS label to begin with a digit — so
-`127.evil.example` is an ordinary registrable name that satisfied it, and reviewers
-demonstrated it passing on both binaries. `inet_pton` decides now, and `::1` is matched
-by its bytes rather than by string equality (which had been refusing
-`0:0:0:0:0:0:0:1` as remote).
+**It requires the address in canonical form.** Two rounds got this wrong in two
+different ways, and the second one is the instructive one.
+
+`hasPrefix("127.")` was a text check, and RFC 1123 permits a DNS label to begin with a
+digit — so `127.evil.example` is an ordinary registrable name that satisfied it, and
+reviewers demonstrated it passing on both binaries.
+
+The replacement parsed with `inet_pton`, and the doc here then claimed the whole class was
+gone. **It was not.** BSD's `inet_pton` reads a leading-zero field as decimal while the
+resolver and Claude Code's URL parser read it as octal, so `0127.13.37.42` passed as
+127.13.37.42 and content went to 87.13.37.42. One spelling-sensitive parser for another —
+and the preflight made it worse, because URLSession agrees with `inet_pton` and reported
+success against the real local server on the way past.
+
+So the check is now: parse, print back with `inet_ntop`, require equality. Any spelling
+two parsers could read differently fails the round-trip, which is a property rather than a
+list of examples. `::1` is compared by bytes, not text, because `0:0:0:0:0:0:0:1` is a
+form people write and every parser agrees on — a strict text round-trip there would
+reintroduce the over-strictness the old string equality had.
+
+**Do not write "this removes the whole class" here again.** That sentence, added the round
+before the octal defect was found, is what made the octal defect hard to see: a reader
+checking whether spellings were handled found an assurance where a check should have been.
 
 DNS is deliberately not consulted: resolving the name would make the answer depend on a
 lookup that can differ between the check and the connection that follows. A name is not
@@ -265,6 +287,19 @@ mistakes in the round-3 fixes were caught this way and never shipped.
 requirement was briefly malformed — codesign read it as a path and rejected all input.
 Eight "refuses X" cases stayed green; only the one positive case, "accepts a genuinely
 signed binary", noticed. Any gate needs at least one test that it must *not* refuse.
+
+**A skip is not a pass, and a test that constructs a fixture must assert it.** Round 4
+found both, in the tests written for the rule above:
+
+- that positive case *skipped* without `DEVELOPER_ID` and the suite still exited 0, so
+  the one guard against "refuses everything" was silently absent in CI. Skips are now
+  counted and printed, and `REQUIRE_FULL_SUITE=1` turns any skip into a failure. Set it
+  on a release path.
+- the forgery case discarded `codesign`'s exit status. Had codesign ever refused the
+  embedded newline, the fixture would have been merely *unsigned*, refused for that
+  instead, and the case would have printed `ok` forever while defending nothing. Building
+  a fixture is part of the assertion: check that it succeeded, and that it has the
+  property it exists to have.
 
 ### Fix the property, not the file
 
