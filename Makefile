@@ -4,7 +4,7 @@ BINARY_NAME := OmlxConnectorMCP
 # language mode only if an upstream dependency trips strict concurrency.
 FALLBACK_FLAGS := $(shell swift build 2>&1 | grep -q "SendingRisksDataRace" && echo "-Xswiftc -swift-version -Xswiftc 5")
 
-.PHONY: build release release-signed verify-developer-id install install-signed clean test ping
+.PHONY: build release release-signed verify-developer-id install install-omlx-claude install-signed clean test ping
 
 build:
 	swift build $(FALLBACK_FLAGS)
@@ -34,6 +34,21 @@ install: release
 	chmod +x ~/bin/$(BINARY_NAME)
 	codesign --force --sign - ~/bin/$(BINARY_NAME)
 	@echo "installed ~/bin/$(BINARY_NAME)"
+
+## Local install of the usage-1 command, ad-hoc signed. Development only —
+## end users get it from the plugin's session-start hook, which downloads the
+## notarized build from the release.
+install-omlx-claude: release
+	@mkdir -p ~/bin
+	rm -f ~/bin/omlx-claude
+	cp .build/release/omlx-claude ~/bin/omlx-claude
+	chmod +x ~/bin/omlx-claude
+	codesign --force --sign - ~/bin/omlx-claude
+	@~/bin/omlx-claude --version | awk '{print $$NF}' > ~/bin/.omlx-claude.version
+	@echo "installed ~/bin/omlx-claude"
+	@case ":$$PATH:" in *":$$HOME/bin:"*) ;; \
+	  *) echo "warning: ~/bin is not on your PATH — typing 'omlx-claude' will not find it" ;; \
+	esac
 
 ## Local install with the real Developer ID.
 install-signed: verify-developer-id release
