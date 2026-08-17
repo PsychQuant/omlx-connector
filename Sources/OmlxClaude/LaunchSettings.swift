@@ -211,6 +211,7 @@ enum LaunchError: LocalizedError, Equatable {
     case settingsEncodingFailed
     case unusableAddress(detail: String)
     case nonLoopbackRefused(host: String, url: String)
+    case ambiguousAddress(host: String)
     case serverUnreachable(url: String)
     case serverRequiresAuth(url: String)
     case credentialRejected(url: String)
@@ -235,6 +236,20 @@ enum LaunchError: LocalizedError, Equatable {
                 go there.
                 If '\(host)' is a machine you own and you intend that, set
                 OMLX_ALLOW_REMOTE=1.
+                """
+        case .ambiguousAddress(let host):
+            // Deliberately does NOT mention OMLX_ALLOW_REMOTE. The old message did, for this
+            // case as well as for genuinely remote hosts, and following that advice restored
+            // the octal bypass this check exists to close.
+            return """
+                Refusing '\(host)': it is an IP address written in a form that different
+                parsers read differently. This one reads it as one address; the system
+                resolver and Claude Code's URL parser may read it as another, so content
+                would leave for a machine you did not name — and the preflight would report
+                success against the machine you meant.
+                Write the address in its canonical form (for example 127.0.0.1, not
+                0127.0.0.1). OMLX_ALLOW_REMOTE does not apply here: it means "this other
+                machine is mine", which cannot be asserted about an address that names two.
                 """
         case .serverUnreachable(let url):
             return """

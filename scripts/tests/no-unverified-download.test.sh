@@ -22,10 +22,15 @@
 #
 # ## And it has cases that must fail
 #
-# scripts/tests/fixtures/ holds four downloaders, each of which a previous version of this
-# scanner reported as clean. They are copied into a throwaway plugin tree and the scanner
-# must refuse every one. Without them, deleting a clause here would go unnoticed — which is
-# the defect round 5 found: a scanner with no case that must fail.
+# scripts/tests/fixtures/ holds one downloader per clause, each of which some version of this
+# scanner reported as clean. A fixture's path under fixtures/ is where it installs under
+# plugin/, so each lands on the path whose clause it is meant to trip — version 3 dropped them
+# all at plugin/hooks/<basename>, and a fixture written for the fetcher clause was refused for
+# being unlisted instead: passing while proving nothing.
+#
+# Every clause is mutation-tested: make it always-true and its own fixture goes red. Assert
+# that the mutation applied before reading the result — a sed that silently fails to match
+# looks exactly like a clause with no coverage, and cost one wrong diagnosis already.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -44,7 +49,15 @@ DELEGATOR_PATHS="bin/omlx-connector-wrapper.sh hooks/session-start.sh"
 # Files that are data, not code. Anything else unlisted is a failure by default.
 DATA_PATHS=".claude-plugin/plugin.json .mcp.json CLAUDE.md hooks/hooks.json skills/local-delegation/SKILL.md"
 
-in_list() { case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
+# Exact membership. The previous form was `case " $2 " in *" $1 "*`, a substring test: a path
+# equal to two adjacent entries joined by a space matched, because that concatenation really
+# is a substring of the space-joined list. Round 6 found it; it is reproducible in three
+# lines. Iterating is not slower at this size and cannot be fooled by concatenation.
+in_list() {
+    local needle="$1" item
+    for item in $2; do [ "$item" = "$needle" ] && return 0; done
+    return 1
+}
 
 # Comments describe the defects these files no longer have, so a scan that read prose would
 # flag the explanation as the offence — that happened once already.
@@ -82,9 +95,10 @@ scan_tree() {
         fi
 
         if [ "$rel" = "$FETCHER_PATH" ]; then
-            # The one permitted downloader. It must actually invoke the verifier by path,
-            # not merely mention its name — a grep for the name is satisfied by a comment,
-            # which is round 2's original defect.
+            # The one permitted downloader, and it must *run* the verifier. A grep for the
+            # name is satisfied by a comment — round 2's original defect, which recurred
+            # here through a TRAILING comment the stripper missed.
+            #
             # An invocation — `bash "$DIR/verify-download.sh" …` — not a mention. Stripping
             # trailing comments already kills a bare mention; requiring the verb makes that
             # independent of how accurate the stripper is.
@@ -116,7 +130,10 @@ scan_tree() {
         # unreviewed executable under plugin/ is exactly how the worst rogue shipped.
         [ -z "$quiet" ] && bad "$label$rel is not on the allowlist — add it deliberately or delegate"
         problems=$((problems + 1))
-    done < <(find "$plugin" -type f | sort)
+    # -L follows symlinks. Without it a symlinked rogue is invisible to the scan while being
+    # perfectly executable at runtime — `find -type f` does not report a symlink as a file,
+    # so the allowlist never sees the path at all.
+    done < <(find -L "$plugin" -type f | sort)
 
     return $((problems > 0))
 }
@@ -141,7 +158,17 @@ else
         SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/scanner-fixture-XXXXXX")
         cp -R "$ROOT/plugin" "$SANDBOX/plugin"
         mkdir -p "$SANDBOX/plugin/$(dirname "$name")"
-        cp "$fixture" "$SANDBOX/plugin/$name"
+        # A fixture whose name ends in .symlink installs as a *symlink* to a payload kept
+        # outside the tree. `find -type f` does not report a symlink as a file, so before
+        # -L was added the allowlist never saw the path while it stayed perfectly
+        # executable at runtime.
+        case "$name" in
+            *.symlink)
+                name="${name%.symlink}"
+                ln -s "$fixture" "$SANDBOX/plugin/$name"
+                ;;
+            *) cp "$fixture" "$SANDBOX/plugin/$name" ;;
+        esac
         if scan_tree "$SANDBOX/plugin" "" quiet; then
             bad "fixture $name was NOT refused — the scanner would miss it in plugin/"
         else

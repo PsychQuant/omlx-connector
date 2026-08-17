@@ -207,6 +207,33 @@ final class LoopbackIsAddressNotTextTests: XCTestCase {
         XCTAssertFalse(LoopbackPolicy.isLoopback("::ffff:8.8.8.8"))
     }
 
+    func testTheOptInDoesNotBypassANonCanonicalSpelling() {
+        // Round 6, from the adversarial reviewer: `--host 0127.0.0.1` was refused as a
+        // "non-loopback host" and the message told the user to set OMLX_ALLOW_REMOTE=1.
+        // Doing so let it through — so the remediation path walked the user straight back
+        // into the round-4 octal defect, with a green preflight against the real local
+        // server on the way.
+        //
+        // The opt-in exists for "this remote machine is mine". It cannot cover "this
+        // spelling means different things to different parsers", because there the user
+        // has not named a machine at all: content goes somewhere they did not choose.
+        for host in ["0127.0.0.1", "0127.13.37.42", "::ffff:0127.0.0.1"] {
+            XCTAssertEqual(
+                LoopbackPolicy.classify(host), .nonCanonical,
+                "\(host) is ambiguous, not remote — the opt-in must not cover it")
+        }
+    }
+
+    func testRemoteAndNonCanonicalAreDifferentVerdicts() {
+        // They need different messages: one is "set the opt-in if you meant it", the other
+        // is "write the address canonically". Reporting the second as the first is what
+        // produced the advice above.
+        XCTAssertEqual(LoopbackPolicy.classify("api.example.com"), .remote)
+        XCTAssertEqual(LoopbackPolicy.classify("8.8.8.8"), .remote)
+        XCTAssertEqual(LoopbackPolicy.classify("127.0.0.1"), .loopback)
+        XCTAssertEqual(LoopbackPolicy.classify("::1"), .loopback)
+    }
+
     func testNonCanonicalIPv4SpellingsAreRefused() {
         // `inet_pton` on BSD reads a leading-zero field as decimal; the system resolver
         // and Claude Code's WHATWG URL parser read it as octal. So `0127.13.37.42`
@@ -256,13 +283,25 @@ final class LoopbackIsAddressNotTextTests: XCTestCase {
         XCTAssertFalse(LoopbackPolicy.isLoopback("::ffff:8.8.8.8"))
     }
 
-    func testNonCanonicalIPv6SpellingsAreRefused() {
-        // Same reasoning for v6: leading zeros in a group are accepted by inet_pton but
-        // are not the canonical form, and a parser downstream may normalize differently.
-        // `::1` and the fully-zero-padded form are both canonical *inputs* people write,
-        // so those stay accepted via the expansion test above; what is refused here is a
-        // form no correct parser produces.
-        XCTAssertFalse(LoopbackPolicy.isLoopback("::0001:0000:0000:0000:0001"))
+    func testIPv6HexGroupsAreNotCanonicalized_AndTheDocSaysSo() {
+        // Round 6: the doc comment on parseCanonicalIPv6 promised two guarantees — a
+        // canonical embedded IPv4 literal, AND "hex groups must be plain lowercase hex
+        // without an accidental second interpretation". Only the first exists. Nothing
+        // inspects hex groups, and the test that appeared to cover the second was vacuous:
+        // `::0001:0000:0000:0000:0001` is refused because it expands to ::1:0:0:0:1, which
+        // simply is not ::1 — it stayed green with the whole mechanism deleted.
+        //
+        // The honest resolution is to pin the real behaviour and correct the comment, not to
+        // add a check nobody needs: unlike a dotted quad, an IPv6 hex group has no second
+        // reading. `0001` is 1 under every parser. Leading zeros there are verbose, not
+        // ambiguous, and refusing them would repeat the over-strictness that once rejected
+        // `0:0:0:0:0:0:0:1`.
+        XCTAssertEqual(LoopbackPolicy.classify("::0001"), .loopback)
+        XCTAssertEqual(LoopbackPolicy.classify("0:0:0:0:0:0:0:0001"), .loopback)
+        XCTAssertEqual(LoopbackPolicy.classify("0000:0000:0000:0000:0000:0000:0000:0001"), .loopback)
+
+        // And the address that the vacuous test used: refused, but for its value.
+        XCTAssertEqual(LoopbackPolicy.classify("::0001:0000:0000:0000:0001"), .remote)
     }
 
     func testNonLoopbackAddressesAndNamesStayRefused() {

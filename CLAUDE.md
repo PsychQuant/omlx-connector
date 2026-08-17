@@ -202,6 +202,15 @@ DNS is deliberately not consulted: resolving the name would make the answer depe
 lookup that can differ between the check and the connection that follows. A name is not
 this machine unless it is the literal `localhost`.
 
+**Ambiguous is not the same as remote, and the messages must not merge them.**
+`LoopbackPolicy.classify` returns `.loopback`, `.remote` or `.nonCanonical`, and
+`OMLX_ALLOW_REMOTE=1` covers only the second. The opt-in means "this other machine is mine",
+which nobody can assert about `0127.0.0.1` — they have not named one machine. Round 6 found
+the earlier message reporting the ambiguous case as *non-loopback* and offering the opt-in
+for it, so a user who followed the advice restored the octal bypass, with a green preflight
+against the machine they meant. The refusal was right; its explanation and its remedy were
+both wrong, which is worse than a plain refusal because it is a documented path back in.
+
 **Every entry point must go through it.** `OmlxConfig.resolveBaseURL` does, for the MCP
 server; `ProbeTarget.resolveChecked` does, for the launcher. Adding a third path that
 resolves an address without consulting the policy reopens the hole described next.

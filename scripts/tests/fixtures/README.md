@@ -15,6 +15,8 @@ Each file must be refused by the scanner, and each is refused by a **different**
 | `hooks/rogue-no-extension` | unlisted paths are refused | `find -name '*.sh'` never enumerated it |
 | `hooks/rogue-alt-mechanisms.sh` | unlisted paths are refused | `git clone` was absent from the mechanism list, `ncat ` does not match `nc `, and `"$D/evil2"` contains no `bin/` literal |
 | `hooks/rogue-python-urlretrieve.sh` | unlisted paths are refused | no `curl`, no `chmod +x`, no `exec "$BINARY"` — three clauses walked around at once |
+| `hooks/linked-rogue.sh.symlink` | symlinks are enumerated | `find -type f` does not report a symlink as a file, so the path was never seen while staying perfectly executable. The `.symlink` suffix tells the harness to install it as a link rather than copy it |
+| `bin/omlx-connector-wrapper.sh hooks/session-start.sh` | list membership is exact | `in_list` was a substring test over the space-joined list, so a path equal to two adjacent entries joined by a space matched. This one is treated as a delegator and then only has to *mention* the fetcher |
 
 ## Extending this
 

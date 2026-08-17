@@ -119,8 +119,21 @@ enum ProbeTarget {
             components.host = "[\(bare)]"
         }
 
-        if !LoopbackPolicy.isLoopback(bare), !LoopbackPolicy.allowsRemote(environment: environment) {
-            return .failure(.nonLoopbackRefused(host: bare, url: components.url?.absoluteString ?? bare))
+        // The opt-in covers `.remote` and deliberately does not cover `.nonCanonical`. An
+        // ambiguous spelling is not a machine the operator can be vouching for: the address
+        // they typed and the address content reaches are decided by different parsers. The
+        // previous message reported both as "non-loopback" and offered the opt-in for both,
+        // so following its advice restored the round-4 octal bypass.
+        switch LoopbackPolicy.classify(bare) {
+        case .loopback:
+            break
+        case .remote:
+            guard LoopbackPolicy.allowsRemote(environment: environment) else {
+                return .failure(
+                    .nonLoopbackRefused(host: bare, url: components.url?.absoluteString ?? bare))
+            }
+        case .nonCanonical:
+            return .failure(.ambiguousAddress(host: bare))
         }
 
         guard let url = components.url else {
