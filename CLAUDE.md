@@ -99,6 +99,7 @@ leaves a revision where the release build necessarily fails.
 Sources/OmlxConnectorCore/          shared by both executables — keep it small
   Version.swift                     single source of truth for the version
   UpstreamWorkaround.swift          verified-baseline check + version ordering
+  LoopbackPolicy.swift              the invariant, shared by every entry point
 
 Sources/OmlxConnectorMCP/           usage 2 — Claude calls the local model
   main.swift                        flags, config resolution, startup guards
@@ -110,7 +111,7 @@ Sources/OmlxConnectorMCP/           usage 2 — Claude calls the local model
 Sources/OmlxClaude/                 usage 1 — the local model is the agent
   main.swift                        preflight, staleness notice, exec into omlx launch
   LaunchSettings.swift              what the --settings override covers, and what it only reports
-  ProbeTarget.swift                 reads --host/--port without consuming them
+  ProbeTarget.swift                 address + credential resolution, loopback gate, argparse-compatible flag scan
   Help.swift                        command name + help text
 ```
 
@@ -119,6 +120,14 @@ nothing else. Adding a type here means widening its access level for every calle
 and an earlier draft that moved `OmlxClient` and `ResponseFormatting` in would have
 made twelve types public to serve one caller. Identity belonging to a single command
 goes the other way, into that command's own target.
+
+"Small" is not the same as "minimal", and the difference cost a regression. Keeping
+`OmlxClient` out was right — twelve public types to serve one caller is a bad trade.
+Keeping `LoopbackPolicy` out was wrong, and not because of where the line was drawn but
+because of what it was drawn on: the test is **who depends on this**, not how big it is.
+An invariant both commands are supposed to enforce belongs here no matter how few lines
+it takes, and it went unnoticed precisely because it was small enough to look like it
+did not qualify.
 
 Conventions worth keeping:
 
@@ -129,18 +138,52 @@ Conventions worth keeping:
 - **`formatJSON` pre-checks `isValidJSONObject`.** `JSONSerialization` raises an
   ObjC exception on a `Date`/NaN/non-string key, which Swift cannot catch — it takes
   down the process. The check is load-bearing.
+- **`ProbeTarget` matches oMLX's argparse, not our idea of it.** Last occurrence wins,
+  unambiguous prefixes count (`--ho` is `--host`), nothing past `--` is read. This is
+  not politeness: the resolved address is written into `ANTHROPIC_BASE_URL`, so parsing
+  a flag differently from oMLX means content leaving for a host oMLX is not serving. The
+  full option set is listed in `omlxOptions` because prefix matching needs to know the
+  options we *don't* care about too — otherwise `--ha` (haiku) looks like a prefix of
+  `--host`.
 - **`TrustedErrorMessage`** marks errors whose text we authored. Anything else
   (notably `URLError`) is sanitized before display; system-generated strings are not
   trusted into logs.
 
 ## The loopback constraint
 
-`OmlxConfig.resolveBaseURL` refuses non-loopback hosts unless `OMLX_ALLOW_REMOTE=1`.
-This is the one invariant that cannot regress: the entire premise is that content
-stays on the machine. Tests cover it, including that the opt-in accepts *only* `1`
-(so a stray `true` does not open the door).
+`LoopbackPolicy` in `OmlxConnectorCore` refuses non-loopback hosts unless
+`OMLX_ALLOW_REMOTE=1`. This is the one invariant that cannot regress: the entire
+premise is that content stays on the machine. Tests cover it, including that the opt-in
+accepts *only* `1` (so a stray `true` does not open the door).
 
-Any change touching config resolution should keep those tests passing without
+**Every entry point must go through it.** `OmlxConfig.resolveBaseURL` does, for the MCP
+server; `ProbeTarget.resolveChecked` does, for the launcher. Adding a third path that
+resolves an address without consulting the policy reopens the hole described next.
+
+### It was already regressed once, and how that happened is worth keeping
+
+`omlx-claude` shipped without any loopback check. A grep for the policy over
+`Sources/OmlxClaude/` returned one line — a comment *mentioning* it. Four independent
+reviewers found this in a single pass; `OMLX_URL=https://external.example/api` resolved
+cleanly and would have been asserted into `ANTHROPIC_BASE_URL`, which outranks
+everything, taking the whole session and the bearer token with it.
+
+Two things made it possible, and both are structural rather than careless:
+
+1. **The policy lived in the MCP target.** A second entry point could not reach it
+   without either moving it or copying it, and neither happened — so the invariant was
+   enforced in the half of the module that had always had it.
+2. **A fix for a different bug pinned the hole as correct.** An earlier round fixed
+   `OMLX_URL` losing its scheme, and the regression test it added asserted that
+   `https://server.example:8443/api` resolves. That is a true statement about URL
+   assembly and a false statement about policy, and it was sitting in the suite reading
+   like approval.
+
+The lesson for future work here: a test that uses a remote address as a *fixture* must
+opt in explicitly (`OMLX_ALLOW_REMOTE=1`), so that it cannot be mistaken for a statement
+that remote addresses are acceptable. `ProbeTargetResolveTests` does this deliberately.
+
+Any change touching address resolution should keep those tests passing without
 weakening them.
 
 ## Build and release

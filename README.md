@@ -104,19 +104,31 @@ notice.
 
 ## The loopback guarantee
 
-The server **refuses to send anything to a non-loopback host**:
+**Both** entry points refuse to send anything to a non-loopback host.
 
 ```
 $ OMLX_BASE_URL=https://api.example.com OmlxConnectorMCP --ping
 OmlxConnectorMCP: Refusing to send content to non-loopback host 'api.example.com'.
 This server exists so that content stays on this machine. If 'api.example.com' is a
 machine you own and you intend to send content there, set OMLX_ALLOW_REMOTE=1.
+
+$ OMLX_URL=https://api.example.com omlx-claude
+omlx-claude: Refusing to run a session against non-loopback host 'api.example.com'.
+This command exists so that content stays on this machine, and the address resolved
+here is asserted into ANTHROPIC_BASE_URL at a higher precedence than anything else —
+so the whole session, and the API token, would go there.
 ```
 
 This is enforced in code rather than promised in documentation, because a privacy
 property that depends on nobody mis-editing a config file is not a privacy property.
 `OMLX_ALLOW_REMOTE=1` exists for the one legitimate exception — an oMLX instance on
-another machine you own — and requires a deliberate act to enable.
+another machine you own — and requires a deliberate act to enable. Only the literal
+`1` counts; a stray `true` does not open the door.
+
+The two commands share **one** implementation of this, `LoopbackPolicy` in
+`OmlxConnectorCore`. That is not tidiness. `omlx-claude` originally shipped without any
+loopback check at all — four independent reviewers found the gap in a single pass — and
+a second copy of an invariant is one copy plus a future divergence.
 
 ## Requirements
 

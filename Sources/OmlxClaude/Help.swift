@@ -56,6 +56,16 @@ enum LauncherIdentity {
           OMLX_TOKEN   Auth token for the oMLX server. --api-key outranks it. With
                        neither, no credential is asserted and oMLX's own configured
                        key is left in force.
+          OMLX_ALLOW_REMOTE
+                       Set to exactly 1 to permit a non-loopback server. See below.
+
+        THE LOOPBACK GATE
+        A non-loopback --host or OMLX_URL is refused unless OMLX_ALLOW_REMOTE=1. This
+        is not caution about the preflight: the address resolved here is written into
+        ANTHROPIC_BASE_URL through --settings, which outranks everything else, so a
+        remote one takes the entire session and the API token with it. The MCP server
+        applies the same rule to the same policy. Set OMLX_ALLOW_REMOTE=1 only for an
+        oMLX instance on a machine you own.
 
         ON CLAUDE_CODE_DISABLE_1M_CONTEXT
         This launch sets it, and you should not read that as bounding your context.
