@@ -62,8 +62,16 @@ final class ProbeTargetFlagScanTests: XCTestCase {
 /// produced an unparseable string for IPv6, and then force-unwrapped the result.
 final class ProbeTargetResolveTests: XCTestCase {
 
+    /// These cases are about URL *assembly*, so they opt in to remote explicitly. The
+    /// loopback gate itself is covered in LoopbackGateTests — keeping the two apart is
+    /// deliberate: before round 2 these very fixtures (`https://server.example:8443/api`)
+    /// were pinning acceptance of a remote address as correct behavior, which is exactly
+    /// the defect four reviewers reported. They may assert scheme/path preservation; they
+    /// may not stand in for the policy.
     private func resolve(_ args: [String], _ env: [String: String] = [:]) -> URL? {
-        ProbeTarget.resolve(arguments: args, environment: env)
+        var environment = env
+        environment["OMLX_ALLOW_REMOTE"] = "1"
+        return ProbeTarget.resolve(arguments: args, environment: environment)
     }
 
     func testDefault() {
@@ -93,14 +101,6 @@ final class ProbeTargetResolveTests: XCTestCase {
             "https://server.example:9000/api")
     }
 
-    func testIPv6HostIsBracketed() {
-        // `::1` is not an exotic input: this repo's own OmlxConfig.isLoopback accepts
-        // it as the canonical IPv6 loopback. The old code produced `http://::1:8000`
-        // and then crashed on the force-unwrap.
-        XCTAssertEqual(resolve(["--host", "::1"])?.absoluteString, "http://[::1]:8000")
-        XCTAssertEqual(resolve(["--host", "[::1]"])?.absoluteString, "http://[::1]:8000")
-    }
-
     func testUnusableHostReturnsNilRatherThanCrashing() {
         // Any of these used to reach `URL(string:)!` and take the process down with
         // SIGTRAP and no message at all.
@@ -114,9 +114,11 @@ final class ProbeTargetResolveTests: XCTestCase {
         XCTAssertNil(resolve(["--port", "-1"]))
     }
 
-    func testUnparseableOmlxUrlFallsBackToTheDefault() {
-        XCTAssertEqual(resolve([], ["OMLX_URL": "not a url"])?.absoluteString,
-                       "http://127.0.0.1:8000")
+    func testUnparseableOmlxUrlIsRefusedRatherThanSilentlyDefaulted() {
+        // Falling back to the default would point the session at a different server
+        // than the operator named, without saying so.
+        XCTAssertNil(resolve([], ["OMLX_URL": "not a url"]))
+        XCTAssertNil(resolve([], ["OMLX_URL": "server.example:8443"]))  // no scheme
     }
 
     func testModelsEndpointAppendsToAnyExistingPath() {

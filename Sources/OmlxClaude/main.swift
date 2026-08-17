@@ -53,23 +53,38 @@ func capture(_ launchPath: String, _ arguments: [String]) -> String? {
     return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-// oMLX has to exist before anything else here makes sense.
-guard let omlxVersion = capture("omlx", ["--version"]) else {
-    fail(LaunchError.omlxNotInstalled)
-}
+// Whether `omlx` is on PATH at all is the real precondition; what version it reports
+// is not. An earlier cut treated a failed `omlx --version` as "oMLX is not installed"
+// and aborted — so a slow or broken version subcommand blocked a launch that would
+// have worked, and blamed the wrong thing. `execvp` below is the honest test of
+// existence; this is only the staleness input.
+let omlxVersion = capture("omlx", ["--version"])
 
-// Say so when the launcher's assumptions were checked against an older oMLX. This
-// is the whole exit-condition mechanism: it needs no knowledge of when upstream
-// lands a fix, only of what we last verified.
-if let notice = UpstreamWorkaround.stalenessNotice(installedOmlxVersion: omlxVersion) {
+// Say so when the launcher's assumptions were checked against an older oMLX. This is
+// the whole exit-condition mechanism: it needs no knowledge of when upstream lands a
+// fix, only of what we last verified.
+//
+// Silence is the one thing this may not do, which is why an unreadable version is
+// reported rather than swallowed: an unparseable string most likely means the output
+// format changed, and that is exactly when the integration is worth re-reading.
+switch UpstreamWorkaround.staleness(installedOmlxVersion: omlxVersion) {
+case .quiet:
+    break
+case .newerThanVerified(let notice), .unreadable(let notice):
     note("\(LauncherIdentity.name): \(notice)")
 }
 
 // Every input here is user-supplied, so an unusable one is reported, never trapped
 // on. `--host ::1` used to reach a force-unwrap and take the process down with
 // SIGTRAP and no message at all.
-guard let baseURL = ProbeTarget.resolve(arguments: forwarded) else {
-    fail(LaunchError.unusableAddress(detail: "Cannot build a server address from those arguments."))
+// The loopback policy is applied here, by the same rule the MCP server uses. It is not
+// advisory: the address resolved below is asserted into ANTHROPIC_BASE_URL at a higher
+// precedence than the environment oMLX sets, so a remote one takes the entire session
+// with it.
+let baseURL: URL
+switch ProbeTarget.resolveChecked(arguments: forwarded) {
+case .success(let url): baseURL = url
+case .failure(let error): fail(error)
 }
 let probeURL = baseURL.absoluteString
 let authToken = ProbeTarget.resolveAuthToken(arguments: forwarded)
@@ -92,9 +107,24 @@ do {
     case 200..<300:
         break
     case 401, 403:
-        // The server is up — saying "not responding" here would send the operator
-        // to start a server that is already running.
-        fail(LaunchError.serverRequiresAuth(url: probeURL))
+        // The server is up. What happens next depends on whether we were the ones
+        // holding a credential.
+        if case .known = authToken {
+            // We sent a key and it was rejected — that is a real, terminal error, and
+            // the message must say the key was refused rather than that one is needed.
+            fail(LaunchError.credentialRejected(url: probeURL))
+        }
+        // We had no key, so this 401 says nothing about whether the launch will work:
+        // oMLX reads its own configuration and may well have one. Aborting here turned
+        // a working setup into a hard failure — a regression against plain
+        // `omlx launch claude`, which succeeds in exactly this case.
+        note(
+            """
+            \(LauncherIdentity.name): the oMLX server at \(probeURL) requires a key and \
+            this launcher has none (no --api-key, no OMLX_TOKEN), so the preflight could \
+            not confirm it. Continuing — oMLX supplies its own configured key. If the \
+            session cannot reach the model, pass --api-key.
+            """)
     default:
         fail(LaunchError.serverUnreachable(url: probeURL))
     }

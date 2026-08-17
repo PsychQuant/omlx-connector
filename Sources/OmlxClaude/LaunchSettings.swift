@@ -150,11 +150,13 @@ enum LaunchSettings {
     }
 }
 
-enum LaunchError: LocalizedError {
+enum LaunchError: LocalizedError, Equatable {
     case settingsEncodingFailed
     case unusableAddress(detail: String)
+    case nonLoopbackRefused(host: String, url: String)
     case serverUnreachable(url: String)
     case serverRequiresAuth(url: String)
+    case credentialRejected(url: String)
     case omlxNotInstalled
 
     var errorDescription: String? {
@@ -167,6 +169,16 @@ enum LaunchError: LocalizedError {
                 --host must be a host name or IP (an IPv6 literal may be given bare or
                 bracketed); --port must be 1-65535.
                 """
+        case .nonLoopbackRefused(let host, let url):
+            return """
+                Refusing to run a session against non-loopback host '\(host)' (\(url)).
+                This command exists so that content stays on this machine, and the
+                address resolved here is asserted into ANTHROPIC_BASE_URL at a higher
+                precedence than anything else — so the whole session, and the API token,
+                would go there.
+                If '\(host)' is a machine you own and you intend that, set
+                OMLX_ALLOW_REMOTE=1.
+                """
         case .serverUnreachable(let url):
             return """
                 No oMLX server responding at \(url)
@@ -176,6 +188,12 @@ enum LaunchError: LocalizedError {
             return """
                 The oMLX server at \(url) refused the request (401).
                 It expects an API key. Pass it with --api-key <key>, or set OMLX_TOKEN.
+                """
+        case .credentialRejected(let url):
+            return """
+                The oMLX server at \(url) rejected the API key you provided (401).
+                Check the value passed to --api-key, or OMLX_TOKEN if that is where it
+                came from.
                 """
         case .omlxNotInstalled:
             return """

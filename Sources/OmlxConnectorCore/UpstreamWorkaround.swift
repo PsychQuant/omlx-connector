@@ -114,15 +114,58 @@ public enum UpstreamWorkaround {
     /// a launch still works.
     public static let lastVerifiedOmlxVersion = "0.6.0rc1"
 
-    /// One line for the operator when the installed oMLX is newer than the release
-    /// this workaround was verified against; nil when there is nothing to say.
-    public static func stalenessNotice(installedOmlxVersion: String) -> String? {
-        guard let installed = OmlxVersion.parse(installedOmlxVersion),
-            let verified = OmlxVersion.parse(lastVerifiedOmlxVersion),
-            installed.compare(to: verified) == .orderedDescending
-        else { return nil }
+    /// What the launcher should say about the installed oMLX, if anything.
+    public enum Staleness: Equatable {
+        /// Same as, or older than, the version this was verified against.
+        case quiet
+        /// Newer — the ground may have moved under the workaround.
+        case newerThanVerified(String)
+        /// The version could not be read at all. Not the same as "nothing to say":
+        /// an unreadable string most likely means the output format changed, which is
+        /// itself a reason to go and re-read the integration.
+        case unreadable(String)
+    }
 
-        return """
+    /// The recorded decision was that this command keeps existing after upstream lands
+    /// its fixes, but must **announce that itself** rather than rely on anyone
+    /// remembering. Returning silence for an unparseable version broke that promise at
+    /// the one moment it mattered: if `omlx --version` ever prints `omlx 0.7.0` instead
+    /// of `0.7.0`, the mechanism would have disabled itself exactly when upstream had
+    /// changed something.
+    public static func staleness(installedOmlxVersion: String?) -> Staleness {
+        guard let raw = installedOmlxVersion, !raw.isEmpty else {
+            return .unreadable(
+                """
+                could not read the installed oMLX version, so this launcher cannot tell \
+                whether its settings override is still current. It was last verified \
+                against \(lastVerifiedOmlxVersion); re-read integrations/claude.py if \
+                anything looks wrong.
+                """)
+        }
+        guard let installed = OmlxVersion.parse(raw) else {
+            return .unreadable(
+                """
+                oMLX reports its version as '\(raw)', which this launcher cannot parse. \
+                That usually means the output format changed — which is itself a reason \
+                to re-read integrations/claude.py. Last verified against \
+                \(lastVerifiedOmlxVersion).
+                """)
+        }
+        guard let verified = OmlxVersion.parse(lastVerifiedOmlxVersion),
+            installed.compare(to: verified) == .orderedDescending
+        else { return .quiet }
+        return .newerThanVerified(notice(installed: raw))
+    }
+
+    /// Kept for callers that only want the newer-than case.
+    public static func stalenessNotice(installedOmlxVersion: String) -> String? {
+        guard case .newerThanVerified(let text) = staleness(installedOmlxVersion: installedOmlxVersion)
+        else { return nil }
+        return text
+    }
+
+    private static func notice(installed installedOmlxVersion: String) -> String {
+        """
             note: oMLX \(installedOmlxVersion) is newer than \
             \(lastVerifiedOmlxVersion), which is what this launcher's settings \
             override was last checked against. If jundot/omlx#2715 and #2716 are \

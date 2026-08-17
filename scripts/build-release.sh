@@ -39,8 +39,12 @@ if [ "${SKIP_NOTARIZE:-}" != "1" ]; then
     : "${NOTARY_PROFILE:?NOTARY_PROFILE not set — see README 'Signing & notarization'}"
 fi
 
-VERSION=$(grep -oE 'static let current = "[^"]+"' Sources/OmlxConnectorCore/Version.swift \
-    | head -1 | cut -d'"' -f2)
+# Anchored and comment-excluding. A plain grep takes the FIRST match anywhere in the
+# file, so a commented-out `/// static let current = "0.3.0"` above a real 0.4.0 would
+# pass the mirror check while both binaries reported 0.4.0 and the release was cut as
+# 0.3.0.
+VERSION=$(grep -E '^[[:space:]]*(public[[:space:]]+)?static let current = "[^"]+"' \
+    Sources/OmlxConnectorCore/Version.swift | head -1 | cut -d'"' -f2)
 [ -n "$VERSION" ] || { echo "✗ could not parse version from Version.swift" >&2; exit 1; }
 echo "→ building $BINARY_NAME $VERSION (arm64)"
 
@@ -54,8 +58,21 @@ for mirror in \
     "$MCPB_DIR/manifest.json"
 do
     [ -f "$mirror" ] || continue
-    if ! grep -q "\"$VERSION\"" "$mirror"; then
-        echo "✗ $mirror does not mention version $VERSION — bump it before releasing" >&2
+    # Compare the `version` KEY, not "does this string appear anywhere in the file".
+    # A description, a URL, or a nested version would have satisfied the old grep.
+    MIRROR_VERSION=$(python3 -c "
+import json,sys
+d=json.load(open(sys.argv[1]))
+if 'plugins' in d and isinstance(d.get('plugins'), list) and d['plugins']:
+    print(d['plugins'][0].get('version',''))
+else:
+    print(d.get('version',''))
+" "$mirror" 2>/dev/null) || {
+        echo "✗ $mirror is not readable JSON — cannot verify the version mirror" >&2
+        exit 1
+    }
+    if [ "$MIRROR_VERSION" != "$VERSION" ]; then
+        echo "✗ $mirror version is '$MIRROR_VERSION', expected '$VERSION'" >&2
         exit 1
     fi
 done
@@ -65,10 +82,18 @@ done
 # miserable failure to diagnose from the outside.
 # Lives with the MCP executable, not in the shared library: the name describes one
 # command, and OmlxConnectorCore is shared by every executable in the module.
-SERVER_NAME=$(grep -oE 'static let mcpServerName = "[^"]+"' Sources/OmlxConnectorMCP/Identity.swift \
-    | head -1 | cut -d'"' -f2)
+SERVER_NAME=$(grep -E '^[[:space:]]*(public[[:space:]]+)?static let mcpServerName = "[^"]+"' \
+    Sources/OmlxConnectorMCP/Identity.swift | head -1 | cut -d'"' -f2)
 MANIFEST_NAME=$(python3 -c "import json;print(json.load(open('$MCPB_DIR/manifest.json'))['name'])" 2>/dev/null || echo "")
-if [ -n "$MANIFEST_NAME" ] && [ "$SERVER_NAME" != "$MANIFEST_NAME" ]; then
+# An absent or unparseable name is itself a failure, not a reason to skip the check.
+# Guarding the comparison on `-n` meant a deleted or empty name turned the gate off
+# exactly when it was needed — and this is the mismatch Claude Desktop reacts to by
+# silently dropping the server, with no error anywhere.
+if [ -z "$SERVER_NAME" ] || [ -z "$MANIFEST_NAME" ]; then
+    echo "✗ could not read mcpServerName ('$SERVER_NAME') or manifest name ('$MANIFEST_NAME')" >&2
+    exit 1
+fi
+if [ "$SERVER_NAME" != "$MANIFEST_NAME" ]; then
     echo "✗ mcpServerName ('$SERVER_NAME') != manifest name ('$MANIFEST_NAME')" >&2
     echo "  Claude Desktop drops the server entirely on this mismatch." >&2
     exit 1

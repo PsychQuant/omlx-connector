@@ -22,9 +22,13 @@ ping: build
 verify-developer-id:
 	@: $${DEVELOPER_ID:?DEVELOPER_ID not set. See README 'Signing & notarization'.}
 
+## The only documented release command. It pointed at scripts/build-mcpb.sh, which has
+## never existed in this repo — `make release-signed` failed with exit 127 for anyone
+## who followed the README. It went unnoticed because the script was always invoked
+## directly during development.
 release-signed: verify-developer-id
 	@: $${NOTARY_PROFILE:?NOTARY_PROFILE not set. See README 'Signing & notarization'.}
-	REQUIRE_CODESIGN=1 ./scripts/build-mcpb.sh
+	./scripts/build-release.sh
 
 ## Local install, ad-hoc signed. Fine for development on this machine only.
 install: release
