@@ -1,21 +1,32 @@
 # omlx-connector
 
-An MCP server that lets Claude Code, Codex, and other MCP clients delegate text work
-to a model running on **your own machine** via [oMLX](https://github.com/jundot/omlx),
-so that content which must not leave the machine never reaches a cloud API.
+Connects [oMLX](https://github.com/jundot/omlx) to Claude Code, so that content which
+must not leave your machine never reaches a cloud API. One install, two ways to use
+it — as the agent, or as a tool the agent calls.
 
-## Two ways to use a local model, and which one this is
+```bash
+omlx-claude --model <model-id>   # the local model answers you
+```
+```
+local_summarize, local_rewrite, local_classify, …   # Claude answers, and hands over
+                                                    # what must stay local
+```
+
+## Two ways to use a local model
 
 The question that separates them is **who answers you**.
 
 | | **Usage 1** | **Usage 2** |
 |---|---|---|
-| How you start it | `omlx launch claude` (or `bin/claude-local`) | install the MCP server |
+| How you start it | `omlx-claude` | the MCP server's five tools |
 | **Who answers you** | **the local model** | **Claude** |
 | The local model is | the agent itself | a tool the agent calls |
 | Claude involved? | no | yes |
 | Works offline | yes | no (the agent still needs the network) |
 | What you give up | frontier-model reasoning | nothing, except latency on the delegated part |
+
+Both arrive together. Installing the plugin puts `omlx-claude` on your `PATH` and
+registers the MCP server; you do not choose between them at install time.
 
 **Usage 1 — the local model is the agent.** Claude Code becomes an interface to
 Qwen (or whatever you loaded). Nothing you type reaches Anthropic. Everything runs
@@ -42,27 +53,48 @@ unpublished research, student or client records — but which still needs summar
 cleaning up, or sorting. Usage 1 would also keep it local, but at the price of doing
 *all* your work on the smaller model.
 
-### On `bin/claude-local` (usage 1)
+### What `omlx-claude` does that `omlx launch claude` does not
 
-`omlx launch claude` is oMLX's own command and is the official way to do usage 1.
-`bin/claude-local` is **not official** — it is a wrapper around that same command,
-here because the official path currently breaks for a common configuration:
+`omlx launch claude` is oMLX's own command, and `omlx-claude` **execs into it** —
+this is a layer on top, not a replacement. oMLX's integration carries knowledge that
+keeps moving (tier mapping, the auto-compact denominator, the LSP prefix-cache
+footgun, the telemetry trade-off), and reimplementing that here would fork it and
+then let it rot.
 
-- If your `~/.claude/settings.json` sets `ANTHROPIC_BASE_URL` (any gateway, proxy,
-  or rate-limiting plugin does), it **overrides** the launcher's value, because
-  Claude Code ranks a settings-file `env` block above inherited environment
-  variables. Requests leave for whatever that points at and you get
-  `401 Invalid bearer token` — while the oMLX log shows nothing arrived
-  ([jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715)).
-- On plans where Opus is auto-upgraded to a 1M context window, the model ID gains a
-  `[1m]` suffix, and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` stops applying
-  ([jundot/omlx#2716](https://github.com/jundot/omlx/issues/2716)).
+What the layer adds:
 
-The wrapper passes the same values through `--settings` — a documented Claude Code
-CLI argument, which outranks user settings and applies to that launch only — and
-sets `CLAUDE_CODE_DISABLE_1M_CONTEXT=1`. Your own config is never modified. **If
-those two issues are fixed upstream, this file should be deleted**; it exists to
-make the official path work, not to replace it.
+- **A settings override that survives your own settings.** The launcher passes its
+  configuration as environment variables, but Claude Code ranks a settings-file
+  `env` block above inherited environment. If your `~/.claude/settings.json` sets
+  `ANTHROPIC_BASE_URL` — any gateway, proxy, or rate-limiting plugin does — the
+  launcher's value is silently overridden, requests leave for whatever that points
+  at, and you get `401 Invalid bearer token` while the oMLX log shows nothing
+  arrived ([jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715)).
+  `omlx-claude` re-asserts those keys through `--settings`, a CLI argument, which
+  outranks user settings and applies to that launch only. Your own config is never
+  modified.
+- **More than the endpoint.** `API_TIMEOUT_MS` is in the override too, and it is not
+  decoration: the launcher sets it to 3,000,000 because a cold model load alone can
+  outlast a normal timeout, and a settings file that shadows it aborts inference
+  mid-generation.
+- **Honesty about what it cannot cover.** Some of what the launcher sets depends on
+  which model oMLX ends up serving — the tier defaults, the context window. Those
+  cannot be re-asserted from outside without reimplementing oMLX's model selection,
+  so instead the command *names* them when your settings would shadow them. A
+  warning beats silence about a key nobody controls.
+- **A preflight against the right address.** `--host` and `--port` are read (not
+  consumed — they still belong to oMLX) so that the reachability check probes the
+  server the launcher is about to use.
+- **An expiry notice.** It records the oMLX version this workaround was last read
+  against and says so when yours is newer, so "upstream may have fixed this" is
+  something the tool tells you rather than something you have to remember.
+
+It will keep existing after
+[#2715](https://github.com/jundot/omlx/issues/2715) and
+[#2716](https://github.com/jundot/omlx/issues/2716) are fixed — distribution, the
+preflight, and the wider override are worth having on their own — but it should not
+quietly keep asserting a workaround against a version nobody checked. Hence the
+notice.
 
 ## The loopback guarantee
 
@@ -154,22 +186,30 @@ make test
 
 ### Usage 1 — running the agent itself on a local model
 
-Everything above installs the MCP server, which is usage 2. Usage 1 needs no
-install: it is oMLX's own command.
-
 ```bash
-omlx launch claude --model <model-id>
+omlx-claude --model <model-id>
 ```
 
-If that gives you `401 Invalid bearer token` while the oMLX log shows no incoming
-request, you are hitting [#2715](https://github.com/jundot/omlx/issues/2715). Until
-it is fixed, use the wrapper in this repo, which works around it and
-[#2716](https://github.com/jundot/omlx/issues/2716) without touching your config:
+Where it comes from depends on how you installed:
 
-```bash
-cp bin/claude-local ~/bin/ && chmod +x ~/bin/claude-local
-claude-local --model <model-id>
-```
+| Install route | Gets `omlx-claude`? |
+|---|---|
+| Plugin (marketplace) | **Yes** — a session-start hook keeps `~/bin/omlx-claude` current |
+| From a clone | `make install-omlx-claude` |
+| Release asset | download `omlx-claude`, `chmod +x`, put it on your `PATH` |
+| `.mcpb` bundle (Claude Desktop) | **No** — see below |
+
+**The `.mcpb` bundle ships the MCP server only.** Claude Desktop has no terminal for
+a command to be typed into, so a launcher inside the bundle would be weight nobody
+could reach. If you installed that way and are looking for `omlx-claude`, nothing is
+broken — take it from the release assets instead.
+
+`~/bin` must be on your `PATH` for the command to be found. The plugin's hook checks
+and tells you if it is not; installed-but-unreachable otherwise reads as a failed
+install.
+
+> `bin/claude-local` is the former name of this command. It still forwards, prints a
+> deprecation notice, and **is removed in 0.4.0**.
 
 The model must have a context window of **at least 48K** — Claude Code refuses
 smaller ones outright, which rules out some otherwise capable models (`Qwen3-32B` is
@@ -263,10 +303,15 @@ export NOTARY_PROFILE="<notarytool keychain profile>"
 make release-signed
 ```
 
+Both binaries are signed and go to Apple in a single notarization submission, so
+the second one costs no extra round-trip. The script prints the exact
+`gh release create` line; every asset it names is matched downstream by filename,
+so leaving one out surfaces as a download error pointing nowhere useful.
+
 ## Related
 
-`omlx launch claude` — running the agent itself on a local model — is a separate
-concern handled upstream. Two issues found while setting that up are filed there:
+Two upstream issues, found while building usage 1, are why `omlx-claude` overrides
+what it overrides. They are filed against oMLX and remain open:
 
 - [jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715) — `ANTHROPIC_BASE_URL`
   set by the launcher is silently overridden by a `~/.claude/settings.json` `env`
