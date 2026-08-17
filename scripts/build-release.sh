@@ -31,7 +31,7 @@ if [ "${SKIP_NOTARIZE:-}" != "1" ]; then
     : "${NOTARY_PROFILE:?NOTARY_PROFILE not set — see README 'Signing & notarization'}"
 fi
 
-VERSION=$(grep -oE 'static let current = "[^"]+"' Sources/OmlxConnectorMCP/Version.swift \
+VERSION=$(grep -oE 'static let current = "[^"]+"' Sources/OmlxConnectorCore/Version.swift \
     | head -1 | cut -d'"' -f2)
 [ -n "$VERSION" ] || { echo "✗ could not parse version from Version.swift" >&2; exit 1; }
 echo "→ building $BINARY_NAME $VERSION (arm64)"
@@ -55,7 +55,9 @@ done
 # The MCP server advertises this name at runtime; Claude Desktop silently drops a
 # server whose serverInfo.name disagrees with the bundle manifest, which is a
 # miserable failure to diagnose from the outside.
-SERVER_NAME=$(grep -oE 'static let mcpServerName = "[^"]+"' Sources/OmlxConnectorMCP/Version.swift \
+# Lives with the MCP executable, not in the shared library: the name describes one
+# command, and OmlxConnectorCore is shared by every executable in the module.
+SERVER_NAME=$(grep -oE 'static let mcpServerName = "[^"]+"' Sources/OmlxConnectorMCP/Identity.swift \
     | head -1 | cut -d'"' -f2)
 MANIFEST_NAME=$(python3 -c "import json;print(json.load(open('$MCPB_DIR/manifest.json'))['name'])" 2>/dev/null || echo "")
 if [ -n "$MANIFEST_NAME" ] && [ "$SERVER_NAME" != "$MANIFEST_NAME" ]; then

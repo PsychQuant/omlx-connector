@@ -1,13 +1,13 @@
 import Foundation
+import OmlxConnectorCore
 
-/// Single source of truth for version and identity strings.
+/// Identity and help text specific to the MCP server executable.
 ///
-/// `scripts/build-release.sh` hard-fails if any mirror of these values drifts
-/// (mcpb/manifest.json, plugin/.claude-plugin/plugin.json,
-/// .claude-plugin/marketplace.json).
-enum AppVersion {
-    static let current = "0.2.1"
-
+/// Split out of the shared `AppVersion` when the module gained a second
+/// executable: the version is common to both, but the binary name, the MCP
+/// `serverInfo.name`, and this help text describe only the server. Keeping them
+/// here means `OmlxConnectorCore` never has to know that MCP exists.
+enum MCPIdentity {
     /// Binary / product name. MUST equal the on-disk filename in ~/bin.
     static let name = "OmlxConnectorMCP"
 
@@ -15,16 +15,18 @@ enum AppVersion {
     /// Claude Desktop silently drops the entire server on mismatch.
     static let mcpServerName = "omlx-connector"
 
-    static let displayName = "oMLX Connector"
-
-    static var versionString: String { "\(name) \(current)" }
+    static var versionString: String { "\(name) \(AppVersion.current)" }
 
     static var helpMessage: String {
         """
-        \(name) \(current) — delegate work to local models on oMLX
+        \(name) \(AppVersion.current) — delegate work to local models on oMLX
 
         Sends text tasks to an oMLX server running on this machine so that content
         which must not leave the machine is never sent to a cloud model.
+
+        This is usage 2 — Claude answers you and hands selected work to a local
+        model. For usage 1, where the local model is the agent itself, run
+        `omlx-claude` instead.
 
         USAGE
           \(name)                 Run as an MCP server over stdio (default)
