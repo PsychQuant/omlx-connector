@@ -138,8 +138,17 @@ do {
 // Managed policy outranks --settings, so a key set there is one we lose outright. It is
 // read separately from everything else: merged into the other scopes it could not be
 // attributed, and a key like ANTHROPIC_BASE_URL is one we normally win.
-let managed = LaunchSettings.managedConflicts(
-    managedSettings: LaunchSettings.loadManagedSettings())
+let managedSettings = LaunchSettings.loadManagedSettings()
+
+// A managed ANTHROPIC_BASE_URL outranks ours, so if it points off this machine the loopback
+// check above described an address the session will not use. We cannot override the policy;
+// we can decline to launch into it. Warning and continuing — which is what this did — left
+// the invariant broken with a notice on top.
+if case .refuse(let host) = LaunchSettings.managedBaseURLVerdict(managedSettings: managedSettings) {
+    fail(LaunchError.managedBaseURLRefused(host: host))
+}
+
+let managed = LaunchSettings.managedConflicts(managedSettings: managedSettings)
 if !managed.isEmpty {
     note(
         """

@@ -281,6 +281,13 @@ binary forging `TeamIdentifier` in `codesign` output, and that **no** script und
 What the tests do *not* cover: anything requiring a live oMLX server. Verify those
 by hand with `make ping` and a real tool call before releasing.
 
+**Nor the wiring in `main.swift`**, which execs and so has no unit test. This is worth
+stating rather than leaving implicit, because a mutation exposed it: deleting the two lines
+that act on `LaunchSettings.managedBaseURLVerdict` — the ones that decline to launch into a
+managed remote endpoint — leaves the whole suite green. The decision function is tested and
+mutation-proven; its call site is not. That is the round-6 finding shape one level down, and
+every guard added to `main.swift` inherits it. Check those by hand.
+
 ### Write the test so it can fail
 
 Three consecutive review rounds here found fixes shipped with tests that could not fail

@@ -257,6 +257,53 @@ final class LaunchSettingsTests: XCTestCase {
                 userSettings: ["env": "not an object"], authToken: .known("t")), [])
     }
 
+    func testTheManagedRefusalSaysWhyAndWhatToDo() {
+        // The verdict is unit-tested and mutation-proven; the two lines in main.swift that
+        // act on it are not, because that file execs. Pinning the message is what can be
+        // checked here — a refusal whose text went empty would still "work" and tell the user
+        // nothing, and this one has to explain that the address checked moments earlier is
+        // not the address the session would use.
+        let text = LaunchError.managedBaseURLRefused(host: "policy.corp").errorDescription ?? ""
+        XCTAssertTrue(text.contains("policy.corp"))
+        XCTAssertTrue(text.contains("managed"))
+        XCTAssertTrue(text.contains("declines"), "must say it is refusing, not warning")
+        XCTAssertFalse(
+            text.contains("OMLX_ALLOW_REMOTE"),
+            "the opt-in cannot override a managed setting; offering it would be the round-6 defect again")
+    }
+
+    func testAManagedRemoteBaseURLIsRefused_NotMerelyNamed() {
+        // Round 6: the warning existed and the launch proceeded anyway. Naming a conflict we
+        // cannot win is worth doing, but on ANTHROPIC_BASE_URL specifically it is not enough
+        // — the gate would have verified 127.0.0.1 while the session left for the policy
+        // endpoint, bearer token included. That is the invariant, not a warning about it.
+        //
+        // We cannot override managed settings. We can decline to launch into them.
+        XCTAssertEqual(
+            LaunchSettings.managedBaseURLVerdict(
+                managedSettings: ["env": ["ANTHROPIC_BASE_URL": "https://policy.corp/api"]]),
+            .refuse(host: "policy.corp"))
+    }
+
+    func testAManagedLoopbackBaseURLIsFine() {
+        // A policy pointing at this machine is not a leak, and refusing it would break a
+        // legitimate managed setup for no gain.
+        XCTAssertEqual(
+            LaunchSettings.managedBaseURLVerdict(
+                managedSettings: ["env": ["ANTHROPIC_BASE_URL": "http://127.0.0.1:8000"]]),
+            .proceed)
+        XCTAssertEqual(LaunchSettings.managedBaseURLVerdict(managedSettings: [:]), .proceed)
+    }
+
+    func testAManagedAmbiguousBaseURLIsRefusedToo() {
+        // Same reasoning as the launcher's own gate: an address two parsers read differently
+        // is not one the operator can be vouching for.
+        XCTAssertEqual(
+            LaunchSettings.managedBaseURLVerdict(
+                managedSettings: ["env": ["ANTHROPIC_BASE_URL": "http://0127.0.0.1:8000"]]),
+            .refuse(host: "0127.0.0.1"))
+    }
+
     func testManagedConflictOnAnOverriddenKeyIsStillReported() {
         // Round 5: four places — including the shipped --help text — claimed this command
         // warns when it can see a managed ANTHROPIC_BASE_URL. It did not, because that key

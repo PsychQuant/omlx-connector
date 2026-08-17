@@ -1,4 +1,5 @@
 import Foundation
+import OmlxConnectorCore
 
 /// Builds the `--settings` payload handed to Claude Code, and reports the keys we
 /// cannot safely re-assert.
@@ -175,6 +176,34 @@ enum LaunchSettings {
             .filter { env[$0] != nil }.sorted()
     }
 
+    /// Whether a managed `ANTHROPIC_BASE_URL` permits launching at all.
+    ///
+    /// Naming an unwinnable conflict is the right response for most keys. For this one it is
+    /// not sufficient, and round 6 said so: the warning fired and the launch proceeded, so
+    /// the gate verified 127.0.0.1 while the session left for the policy endpoint with the
+    /// bearer token. A warning about the invariant is not the invariant.
+    ///
+    /// Managed settings cannot be overridden. They can be declined: this command exists so
+    /// that content stays on the machine, and launching into a policy that sends it elsewhere
+    /// would be doing the opposite while printing a notice about it.
+    ///
+    /// The address is judged by the same `LoopbackPolicy` the launcher applies to its own
+    /// inputs — including the ambiguous case, for the same reason.
+    enum ManagedBaseURLVerdict: Equatable {
+        case proceed
+        case refuse(host: String)
+    }
+
+    static func managedBaseURLVerdict(managedSettings: [String: Any]) -> ManagedBaseURLVerdict {
+        guard let env = managedSettings["env"] as? [String: Any],
+            let raw = env["ANTHROPIC_BASE_URL"] as? String,
+            let host = URLComponents(string: raw)?.host
+        else { return .proceed }
+
+        let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return LoopbackPolicy.classify(bare) == .loopback ? .proceed : .refuse(host: bare)
+    }
+
     /// Reads the managed scope alone, without merging it into anything.
     ///
     /// A missing or unreadable file is not an error: these paths are root-owned and absent
@@ -212,6 +241,7 @@ enum LaunchError: LocalizedError, Equatable {
     case unusableAddress(detail: String)
     case nonLoopbackRefused(host: String, url: String)
     case ambiguousAddress(host: String)
+    case managedBaseURLRefused(host: String)
     case serverUnreachable(url: String)
     case serverRequiresAuth(url: String)
     case credentialRejected(url: String)
@@ -250,6 +280,17 @@ enum LaunchError: LocalizedError, Equatable {
                 Write the address in its canonical form (for example 127.0.0.1, not
                 0127.0.0.1). OMLX_ALLOW_REMOTE does not apply here: it means "this other
                 machine is mine", which cannot be asserted about an address that names two.
+                """
+        case .managedBaseURLRefused(let host):
+            return """
+                Refusing to launch: managed (MDM/policy) settings on this Mac set
+                ANTHROPIC_BASE_URL to '\(host)', which is not this machine.
+                Managed settings outrank the --settings this command passes, so the session
+                would go there — with everything you type and the API token — no matter what
+                address was checked a moment ago. This command exists to prevent exactly that,
+                so it declines rather than launching and warning.
+                Ask whoever manages this Mac to remove that key, or use plain `claude` if you
+                intend to talk to the managed endpoint.
                 """
         case .serverUnreachable(let url):
             return """
