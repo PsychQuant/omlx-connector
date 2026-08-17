@@ -19,19 +19,26 @@ public enum LoopbackPolicy {
 
     /// Whether `host` names this machine.
     ///
-    /// ## This asks the resolver, not the spelling
+    /// ## Two spelling defects, and why the second one is instructive
     ///
-    /// The previous implementation ended in `normalized.hasPrefix("127.")`, which is a
-    /// **text** test. RFC 1123 permits a DNS label to begin with a digit, so
-    /// `127.evil.example` and `127.0.0.1.attacker.example` are ordinary registrable
-    /// hostnames that satisfied it — and reviewers demonstrated both passing the gate on
-    /// both shipped binaries, with only DNS non-resolution standing between the session
-    /// and an attacker-controlled endpoint.
+    /// The first version ended in `normalized.hasPrefix("127.")` — a **text** test. RFC
+    /// 1123 permits a DNS label to begin with a digit, so `127.evil.example` is an
+    /// ordinary registrable hostname that satisfied it, demonstrated passing on both
+    /// binaries. Its tests could not have caught that: every near-miss fixture broke on
+    /// the character right after `127` (`127x.`, `1270.`), so none put a legitimate dot
+    /// there.
     ///
-    /// The tests shipped with that version could not have caught it: every "near miss"
-    /// fixture broke on the character immediately after `127` (`127x.`, `1270.`), so not
-    /// one of them put a legitimate dot there. Address parsing removes the whole class
-    /// rather than the examples anyone happened to think of.
+    /// The replacement parsed with `inet_pton` — and the doc comment here then claimed
+    /// that "address parsing removes the whole class". **It did not.** BSD's `inet_pton`
+    /// reads a leading-zero field as decimal while the resolver and Claude Code's URL
+    /// parser read it as octal, so `0127.13.37.42` passed as 127.13.37.42 and everything
+    /// downstream sent content to 87.13.37.42. One spelling-sensitive parser had been
+    /// swapped for another, and the sentence asserting otherwise is what made the second
+    /// defect harder to see than the first.
+    ///
+    /// What holds is narrower and checkable: the host must **already be canonical**. Any
+    /// spelling two parsers could read differently fails the round-trip, so the gate never
+    /// has to predict which parser runs later. That is a property, not a list of examples.
     ///
     /// **DNS is deliberately not consulted.** Resolving the name would make the answer
     /// depend on a lookup that can differ between this check and the connection that
@@ -47,8 +54,8 @@ public enum LoopbackPolicy {
         let address = normalized.split(separator: "%", maxSplits: 1).first.map(String.init)
             ?? normalized
 
-        if let v4 = parseIPv4(address) { return v4.0 == 127 }
-        if let v6 = parseIPv6(address) { return isIPv6Loopback(v6) }
+        if let v4 = parseCanonicalIPv4(address) { return v4.0 == 127 }
+        if let v6 = parseCanonicalIPv6(address) { return isIPv6Loopback(v6) }
         return false
     }
 
@@ -66,9 +73,28 @@ public enum LoopbackPolicy {
 
     // MARK: - Address parsing
 
-    private static func parseIPv4(_ text: String) -> (UInt8, UInt8, UInt8, UInt8)? {
+    /// Parses only if `text` is already the address's canonical spelling.
+    ///
+    /// The round-trip is the whole point. `inet_pton` on BSD reads a leading-zero field
+    /// as decimal, while the system resolver and Claude Code's WHATWG URL parser read it
+    /// as octal — so `0127.13.37.42` was accepted here as 127.13.37.42 and resolved by
+    /// everything downstream to 87.13.37.42, routable space. Since only the first octet
+    /// was inspected, that made all of 87.0.0.0/8 reachable, and the preflight (URLSession,
+    /// which happens to agree with `inet_pton`) reported success against the real local
+    /// server on the way past.
+    ///
+    /// Demanding canonical form removes the disagreement rather than trying to predict
+    /// it: any spelling two parsers could read differently is not canonical, so it is
+    /// refused here without needing to know which parser runs later.
+    private static func parseCanonicalIPv4(_ text: String) -> (UInt8, UInt8, UInt8, UInt8)? {
         var addr = in_addr()
         guard text.withCString({ inet_pton(AF_INET, $0, &addr) }) == 1 else { return nil }
+
+        var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        guard let printed = inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)),
+            String(cString: printed) == text
+        else { return nil }
+
         let raw = addr.s_addr.bigEndian
         return (
             UInt8((raw >> 24) & 0xff), UInt8((raw >> 16) & 0xff),
@@ -76,9 +102,34 @@ public enum LoopbackPolicy {
         )
     }
 
-    private static func parseIPv6(_ text: String) -> [UInt8]? {
+    /// As above, for v6, but comparing bytes rather than text.
+    ///
+    /// `0:0:0:0:0:0:0:1` and the fully zero-padded form are spellings people write and
+    /// every parser agrees on, so a strict text round-trip would refuse an address that
+    /// really is this machine — the exact over-strictness the previous version had when it
+    /// matched `::1` by string equality. Re-parsing `inet_ntop`'s output and comparing the
+    /// resulting bytes accepts those while still refusing anything that does not survive
+    /// two passes through `inet_pton`.
+    private static func parseCanonicalIPv6(_ text: String) -> [UInt8]? {
         var addr = in6_addr()
         guard text.withCString({ inet_pton(AF_INET6, $0, &addr) }) == 1 else { return nil }
+
+        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        guard let printed = inet_ntop(AF_INET6, &addr, &buffer, socklen_t(INET6_ADDRSTRLEN))
+        else { return nil }
+        let canonical = String(cString: printed)
+
+        // `0:0:0:0:0:0:0:1` and the fully padded form are both spellings people write and
+        // that every parser agrees on, so they are accepted even though `inet_ntop` would
+        // print `::1`. What must be refused is a form no correct parser produces — hence
+        // re-parsing the canonical output and comparing the *bytes*, not the text, while
+        // still rejecting anything that fails to round-trip through inet_pton twice.
+        var reparsed = in6_addr()
+        guard canonical.withCString({ inet_pton(AF_INET6, $0, &reparsed) }) == 1,
+            withUnsafeBytes(of: &addr, { Array($0) })
+                == withUnsafeBytes(of: &reparsed, { Array($0) })
+        else { return nil }
+
         return withUnsafeBytes(of: &addr) { Array($0) }
     }
 

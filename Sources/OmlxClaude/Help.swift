@@ -62,10 +62,14 @@ enum LauncherIdentity {
         THE LOOPBACK GATE
         A non-loopback --host or OMLX_URL is refused unless OMLX_ALLOW_REMOTE=1. This
         is not caution about the preflight: the address resolved here is written into
-        ANTHROPIC_BASE_URL through --settings, which outranks everything else, so a
-        remote one takes the entire session and the API token with it. The MCP server
-        applies the same rule to the same policy. Set OMLX_ALLOW_REMOTE=1 only for an
-        oMLX instance on a machine you own.
+        ANTHROPIC_BASE_URL through --settings, which outranks every settings file you
+        write, so a remote one takes the entire session and the API token with it. The
+        MCP server applies the same rule to the same policy. Set OMLX_ALLOW_REMOTE=1
+        only for an oMLX instance on a machine you own.
+
+        One scope beats --settings: managed (MDM / policy) settings. If your Mac is
+        managed and policy sets ANTHROPIC_BASE_URL, that wins over everything here —
+        this command warns when it can see such a key, but it cannot override it.
 
         ON CLAUDE_CODE_DISABLE_1M_CONTEXT
         This launch sets it, and you should not read that as bounding your context.
@@ -80,8 +84,9 @@ enum LauncherIdentity {
         gateway or rate-limiting plugins — has the launcher's value silently
         overridden, and the failure reads as `401 Invalid bearer token` while the
         oMLX log shows nothing arrived (jundot/omlx#2715). This command re-asserts
-        those keys through --settings, a CLI argument, which outranks user settings
-        and applies to this launch only. Your own config is never modified.
+        those keys through --settings, a CLI argument, which outranks user, project and
+        local settings and applies to this launch only. Your own config is never
+        modified. Managed/policy settings still outrank it; see above.
         """
     }
 }

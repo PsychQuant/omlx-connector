@@ -83,7 +83,8 @@ public struct OmlxVersion: Sendable, Equatable {
 ///   variables (`integrations/claude.py`, `os.execvpe`), but a settings-file `env`
 ///   block outranks inherited environment in Claude Code. Anyone whose settings set
 ///   those keys silently talks to the wrong endpoint. `--settings` outranks both, so
-///   re-asserting there wins.
+///   re-asserting there wins — except against managed/MDM policy settings, which outrank
+///   even command-line arguments (see `LaunchSettings`).
 /// - [jundot/omlx#2716](https://github.com/jundot/omlx/issues/2716) — **not fixed
 ///   here.** An auto-upgraded 1M context window puts a `[1m]` suffix on the model id,
 ///   after which `CLAUDE_CODE_MAX_CONTEXT_TOKENS` stops applying. This command sets

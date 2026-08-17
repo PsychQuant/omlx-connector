@@ -9,8 +9,17 @@ import Foundation
 /// `os.execvpe`s Claude Code (`integrations/claude.py:95-159`). Claude Code ranks a
 /// settings-file `env` block above inherited environment, so a user whose
 /// `~/.claude/settings.json` sets any of those keys silently overrides the launcher —
-/// jundot/omlx#2715. `--settings` is a CLI argument, which outranks settings files, so
-/// re-asserting a key there wins the fight for that key.
+/// jundot/omlx#2715. `--settings` is a CLI argument, which outranks the user, project
+/// and local settings files, so re-asserting a key there wins the fight for that key.
+///
+/// **It does not outrank everything.** Claude Code's documented precedence puts managed
+/// (MDM / policy) settings above command-line arguments. On a managed Mac whose policy
+/// sets `env.ANTHROPIC_BASE_URL`, our value loses — #2715 is not worked around, and the
+/// loopback gate will have verified an address the session does not use. That population
+/// is not hypothetical: #2715's own trigger is "any gateway, proxy, or rate-limiting
+/// plugin", which is the fleet-managed setup most likely to also carry policy settings.
+/// So the managed paths are scanned and a conflict there is *named* — the one scope we
+/// genuinely cannot win is the one where silence is least acceptable.
 ///
 /// ## Why not simply re-assert all of them
 ///
@@ -121,6 +130,9 @@ enum LaunchSettings {
     /// Checking only the global file left the promise half-kept: project and local
     /// settings shadow the launcher's environment exactly as the global one does, so a
     /// conflict defined there produced no warning at all.
+    /// Ordered weakest-to-strongest, and the managed paths are last because they beat
+    /// even `--settings`. Omitting them meant the one scope we cannot override was also
+    /// the one scope we never mentioned.
     static func settingsScopePaths(
         home: URL = URL(fileURLWithPath: NSHomeDirectory()),
         workingDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -129,6 +141,8 @@ enum LaunchSettings {
             home.appendingPathComponent(".claude/settings.json"),
             workingDirectory.appendingPathComponent(".claude/settings.json"),
             workingDirectory.appendingPathComponent(".claude/settings.local.json"),
+            URL(fileURLWithPath: "/Library/Application Support/ClaudeCode/managed-settings.json"),
+            URL(fileURLWithPath: "/etc/claude-code/managed-settings.json"),
         ]
     }
 
@@ -173,9 +187,9 @@ enum LaunchError: LocalizedError, Equatable {
             return """
                 Refusing to run a session against non-loopback host '\(host)' (\(url)).
                 This command exists so that content stays on this machine, and the
-                address resolved here is asserted into ANTHROPIC_BASE_URL at a higher
-                precedence than anything else — so the whole session, and the API token,
-                would go there.
+                address resolved here is asserted into ANTHROPIC_BASE_URL above every
+                settings file you write — so the whole session, and the API token, would
+                go there.
                 If '\(host)' is a machine you own and you intend that, set
                 OMLX_ALLOW_REMOTE=1.
                 """

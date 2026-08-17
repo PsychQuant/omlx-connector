@@ -14,6 +14,17 @@ VERIFY="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/plugin/bin/verify-do
 TEAM_ID="6W377FS7BS"
 PASS=0
 FAIL=0
+SKIP=0
+
+# A skipped case used to exit 0 like a passing one, which hid the single most important
+# assertion in this file: the positive case is what caught a requirement string that
+# refused EVERYTHING while satisfying all eight negative cases. In CI, where
+# DEVELOPER_ID is unset, that guard was silently absent and a "refuses everything"
+# regression would have shipped green.
+#
+# Skips are now counted and reported, and REQUIRE_FULL_SUITE=1 turns any skip into a
+# failure — which is what a release path should set.
+skip() { echo "  SKIP — $1"; SKIP=$((SKIP + 1)); }
 
 check() {  # check <description> <expected: pass|refuse> <candidate> <sumfile>
     local desc="$1" expect="$2" file="$3" sum="$4"
@@ -64,17 +75,28 @@ do
 done
 
 if [ -z "$BUILT" ]; then
-    echo "  skip — signature cases need a built binary (run: swift build)"
+    skip "signature cases need a built binary (run: swift build)"
 else
     # The forgery. `--identifier` is chosen by whoever signs, so a newline inside it
     # injects a line into `codesign -dv` output. Against the old grep-based check this
     # ad-hoc binary passed; against `codesign -R` it must not.
+    # Constructing the forgery is itself an assertion. Previously codesign's exit status
+    # was discarded, so if it ever refused the embedded newline the file would simply be
+    # *unsigned*, verify-download.sh would refuse it for that instead, and this case
+    # would print `ok` forever while defending nothing.
     cp "$BUILT" "$TMP/forged"
-    codesign --force --sign - --identifier "x
-TeamIdentifier=$TEAM_ID" "$TMP/forged" 2>/dev/null
-    shasum -a 256 "$TMP/forged" > "$TMP/forged.sha256"
-    check "refuses an ad-hoc binary that forges TeamIdentifier in codesign output" \
-        refuse "$TMP/forged" "$TMP/forged.sha256"
+    if ! codesign --force --sign - --identifier "x
+TeamIdentifier=$TEAM_ID" "$TMP/forged" 2>/dev/null; then
+        echo "  FAIL — could not construct the forgery; this case is no longer meaningful"
+        FAIL=$((FAIL + 1))
+    elif ! codesign -dv "$TMP/forged" 2>&1 | grep -qx "TeamIdentifier=$TEAM_ID"; then
+        echo "  FAIL — the forgery does not inject the line it exists to inject"
+        FAIL=$((FAIL + 1))
+    else
+        shasum -a 256 "$TMP/forged" > "$TMP/forged.sha256"
+        check "refuses an ad-hoc binary that forges TeamIdentifier in codesign output" \
+            refuse "$TMP/forged" "$TMP/forged.sha256"
+    fi
 
     # Plain ad-hoc, no forgery: also not us.
     cp "$BUILT" "$TMP/adhoc"
@@ -99,13 +121,22 @@ TeamIdentifier=$TEAM_ID" "$TMP/forged" 2>/dev/null
             check "accepts a genuinely Developer ID-signed binary" \
                 pass "$TMP/signed" "$TMP/signed.sha256"
         else
-            echo "  skip — DEVELOPER_ID set but signing failed"
+            skip "DEVELOPER_ID set but signing failed"
         fi
     else
-        echo "  skip — positive case needs DEVELOPER_ID (set it to run the full suite)"
+        skip "positive case needs DEVELOPER_ID — the 'refuses everything' guard did NOT run"
     fi
 fi
 
 echo
-echo "  $PASS passed, $FAIL failed"
+echo "  $PASS passed, $FAIL failed, $SKIP skipped"
+
+if [ "$SKIP" -gt 0 ] && [ "${REQUIRE_FULL_SUITE:-}" = "1" ]; then
+    echo "  REQUIRE_FULL_SUITE=1 and $SKIP case(s) did not run — treating as failure." >&2
+    exit 1
+fi
+if [ "$SKIP" -gt 0 ]; then
+    echo "  note: $SKIP case(s) did not run. Set DEVELOPER_ID to run them all," >&2
+    echo "        and REQUIRE_FULL_SUITE=1 to make a skip fail." >&2
+fi
 [ "$FAIL" -eq 0 ]

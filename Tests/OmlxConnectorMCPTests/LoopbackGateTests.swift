@@ -207,6 +207,41 @@ final class LoopbackIsAddressNotTextTests: XCTestCase {
         XCTAssertFalse(LoopbackPolicy.isLoopback("::ffff:8.8.8.8"))
     }
 
+    func testNonCanonicalIPv4SpellingsAreRefused() {
+        // `inet_pton` on BSD reads a leading-zero field as decimal; the system resolver
+        // and Claude Code's WHATWG URL parser read it as octal. So `0127.13.37.42`
+        // passed this gate as 127.13.37.42 while `ping` and `new URL()` both resolve it
+        // to 87.13.37.42 — routable space. Only the first octet was inspected, so all of
+        // 87.0.0.0/8 was reachable, and the preflight (URLSession, which agrees with
+        // inet_pton) reported a green light against the real local server on the way.
+        //
+        // The gate now demands the host already be its own canonical form, so any
+        // spelling the two parsers could disagree about is refused outright rather than
+        // resolved by whichever one we happened to call.
+        for host in ["0127.0.0.1", "00127.0.0.1", "0127.13.37.42", "127.00.0.1",
+                     "127.0.0.01", "0x7f.0.0.1", "2130706433", "127.1"] {
+            XCTAssertFalse(
+                LoopbackPolicy.isLoopback(host),
+                "\(host) is not canonical — the resolver may read it differently than we do")
+        }
+    }
+
+    func testCanonicalIPv4LoopbackStillWorks() {
+        // The refusal above must not cost the spelling everyone actually uses.
+        for host in ["127.0.0.1", "127.1.2.3", "127.255.255.254"] {
+            XCTAssertTrue(LoopbackPolicy.isLoopback(host), "\(host) is canonical 127/8")
+        }
+    }
+
+    func testNonCanonicalIPv6SpellingsAreRefused() {
+        // Same reasoning for v6: leading zeros in a group are accepted by inet_pton but
+        // are not the canonical form, and a parser downstream may normalize differently.
+        // `::1` and the fully-zero-padded form are both canonical *inputs* people write,
+        // so those stay accepted via the expansion test above; what is refused here is a
+        // form no correct parser produces.
+        XCTAssertFalse(LoopbackPolicy.isLoopback("::0001:0000:0000:0000:0001"))
+    }
+
     func testNonLoopbackAddressesAndNamesStayRefused() {
         for host in ["128.0.0.1", "126.255.255.255", "0.0.0.0", "::",
                      "10.0.0.1", "api.openai.com", "localhost.evil.example"] {

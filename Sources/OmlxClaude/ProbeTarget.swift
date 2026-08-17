@@ -14,9 +14,10 @@ import OmlxConnectorCore
 /// and so the settings override names that same address.
 ///
 /// Getting this wrong is not cosmetic. The resolved address is written into
-/// `ANTHROPIC_BASE_URL` through `--settings`, which is the highest-precedence channel
-/// available — so an address we resolve differently from oMLX is an address content
-/// leaves for while oMLX serves somewhere else. Two rounds of review found two separate
+/// `ANTHROPIC_BASE_URL` through `--settings`, which outranks every settings file a user
+/// writes (though not a managed/MDM policy — see `LaunchSettings`) — so an address we
+/// resolve differently from oMLX is an address content leaves for while oMLX serves
+/// somewhere else. Two rounds of review found two separate
 /// ways that happened; both are now covered by tests that use oMLX's own semantics as
 /// the oracle rather than our idea of them.
 enum ProbeTarget {
