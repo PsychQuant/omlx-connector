@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "omlx-connector",
   "display_name": "oMLX Connector",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Delegate text work to a local model on oMLX — content never leaves your machine",
   "long_description": "Lets Claude and other MCP clients hand off text work to a model running locally via oMLX, so material that must not be sent to a cloud API — recordings and transcripts of other people, unpublished research, client or student records — can still be summarized, rewritten, and classified. The server refuses non-loopback hosts unless explicitly permitted, so the privacy property is enforced in code rather than promised in documentation. Requires macOS on Apple silicon and a running oMLX server.",
   "author": {

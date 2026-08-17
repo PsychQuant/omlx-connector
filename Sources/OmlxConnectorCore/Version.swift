@@ -11,7 +11,7 @@ import Foundation
 /// executable that owns it (`Sources/OmlxConnectorMCP/Identity.swift`), so this
 /// library stays free of any single command's vocabulary.
 public enum AppVersion {
-    public static let current = "0.2.1"
+    public static let current = "0.3.0"
 
     public static let displayName = "oMLX Connector"
 }
