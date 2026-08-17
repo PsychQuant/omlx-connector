@@ -76,16 +76,21 @@ public struct OmlxVersion: Sendable, Equatable {
 /// Why `omlx-claude` exists on top of `omlx launch claude`, and how it announces
 /// that the ground may have moved.
 ///
-/// Two upstream bugs are worked around here:
+/// One upstream bug is actually worked around here, and a second is only tracked:
 ///
-/// - [jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715) — the launcher
-///   passes `ANTHROPIC_BASE_URL` and friends as environment variables
-///   (`integrations/claude.py`, `os.execvpe`), but a settings-file `env` block
-///   outranks inherited environment in Claude Code. Anyone whose settings set
-///   those keys silently talks to the wrong endpoint.
-/// - [jundot/omlx#2716](https://github.com/jundot/omlx/issues/2716) — an
-///   auto-upgraded 1M context window puts a `[1m]` suffix on the model id, after
-///   which `CLAUDE_CODE_MAX_CONTEXT_TOKENS` stops applying.
+/// - [jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715) — **worked
+///   around.** The launcher passes `ANTHROPIC_BASE_URL` and friends as environment
+///   variables (`integrations/claude.py`, `os.execvpe`), but a settings-file `env`
+///   block outranks inherited environment in Claude Code. Anyone whose settings set
+///   those keys silently talks to the wrong endpoint. `--settings` outranks both, so
+///   re-asserting there wins.
+/// - [jundot/omlx#2716](https://github.com/jundot/omlx/issues/2716) — **not fixed
+///   here.** An auto-upgraded 1M context window puts a `[1m]` suffix on the model id,
+///   after which `CLAUDE_CODE_MAX_CONTEXT_TOKENS` stops applying. This command sets
+///   `CLAUDE_CODE_DISABLE_1M_CONTEXT`, which is correct for model ids Claude Code
+///   recognizes — and oMLX-served ids never are, so it does not bound those sessions.
+///   Claude Code says so itself at launch. Tracked in issue #6; do not describe the
+///   key as the fix.
 ///
 /// This command is **not** deleted when those are fixed: it also carries
 /// distribution, a preflight that names the fix when no server answers, and a

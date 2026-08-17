@@ -43,13 +43,25 @@ values depend on which model oMLX ends up serving are **reported, not guessed**:
 `LaunchSettings.modelDependentKeys`. Moving one from the second list to the first
 means reimplementing oMLX's model selection, which is the fork above.
 
+### What it actually works around, and what it only tracks
+
+[#2715](https://github.com/jundot/omlx/issues/2715) **is** worked around, by the
+`--settings` override. [#2716](https://github.com/jundot/omlx/issues/2716) **is not**:
+the launch sets `CLAUDE_CODE_DISABLE_1M_CONTEXT`, which Claude Code honours only for
+model ids it recognizes, and oMLX-served ids never are. The key is kept because it is
+correct if one ever is, and inert otherwise — but **nothing may describe it as the
+fix**. Claude Code prints its own warning saying so at startup. Tracked in issue #6.
+
+That distinction was not free. The first cut of this command shipped the key with
+README, help text and source comments all calling it the #2716 workaround, while the
+end-to-end run that would have disproved it had already been done — the warning was in
+the output and went unread. The mechanism was harmless; the claim was the defect.
+
 ### It keeps existing after upstream is fixed, and says so itself
 
-[#2715](https://github.com/jundot/omlx/issues/2715) and
-[#2716](https://github.com/jundot/omlx/issues/2716) being fixed does not retire this
-command — it also carries distribution, the preflight, and a wider override than the
-launcher's own keys. But it must not quietly keep asserting a workaround against a
-version nobody checked.
+Either issue being fixed does not retire this command — it also carries distribution,
+the preflight, and a wider override than the launcher's own keys. But it must not
+quietly keep asserting a workaround against a version nobody checked.
 
 `UpstreamWorkaround.lastVerifiedOmlxVersion` is that mechanism. It records the oMLX
 release the workaround was **read against**, and the command speaks up when the

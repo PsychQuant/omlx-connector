@@ -65,40 +65,62 @@ if let notice = UpstreamWorkaround.stalenessNotice(installedOmlxVersion: omlxVer
     note("\(LauncherIdentity.name): \(notice)")
 }
 
-let probeURL = ProbeTarget.resolve(arguments: forwarded)
-let token = ProcessInfo.processInfo.environment["OMLX_TOKEN"] ?? "omlx"
+// Every input here is user-supplied, so an unusable one is reported, never trapped
+// on. `--host ::1` used to reach a force-unwrap and take the process down with
+// SIGTRAP and no message at all.
+guard let baseURL = ProbeTarget.resolve(arguments: forwarded) else {
+    fail(LaunchError.unusableAddress(detail: "Cannot build a server address from those arguments."))
+}
+let probeURL = baseURL.absoluteString
+let authToken = ProbeTarget.resolveAuthToken(arguments: forwarded)
 
 // Preflight. Claude Code's own failure when the server is absent is a wall of
 // retries; this is one line that names the fix.
-var request = URLRequest(url: URL(string: "\(probeURL)/v1/models")!)
+var request = URLRequest(url: ProbeTarget.modelsEndpoint(base: baseURL))
 request.timeoutInterval = 5
+// Carry the credential the launch itself will use, or an authenticated server
+// answers 401 here and `--api-key` can never reach `omlx launch` at all.
+if case .known(let token) = authToken {
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+}
 do {
     let (_, response) = try await URLSession.shared.data(for: request)
-    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+    guard let http = response as? HTTPURLResponse else {
+        fail(LaunchError.serverUnreachable(url: probeURL))
+    }
+    switch http.statusCode {
+    case 200..<300:
+        break
+    case 401, 403:
+        // The server is up — saying "not responding" here would send the operator
+        // to start a server that is already running.
+        fail(LaunchError.serverRequiresAuth(url: probeURL))
+    default:
         fail(LaunchError.serverUnreachable(url: probeURL))
     }
 } catch {
     fail(LaunchError.serverUnreachable(url: probeURL))
 }
 
-// Keys whose values depend on oMLX's model selection cannot be re-asserted from
-// here without reimplementing that selection. Name them instead of pretending.
+// Keys we decline to assert — those whose values depend on oMLX's model selection,
+// plus the credential when the operator did not supply one. Name them instead of
+// pretending we control them.
 let conflicts = LaunchSettings.unwinnableConflicts(
-    userSettings: LaunchSettings.loadUserSettings())
+    userSettings: LaunchSettings.loadUserSettings(), authToken: authToken)
 if !conflicts.isEmpty {
     note(
         """
-        \(LauncherIdentity.name): your ~/.claude/settings.json sets \
-        \(conflicts.joined(separator: ", ")), which outranks the value oMLX passes \
-        and depends on which model it serves — so this launcher cannot restore it \
-        for you. Remove those keys if the session reports a context window or model \
-        tier that disagrees with the server.
+        \(LauncherIdentity.name): your Claude Code settings set \
+        \(conflicts.joined(separator: ", ")), which outrank what oMLX passes. Their \
+        correct values depend on what oMLX serves, so this launcher will not guess \
+        them for you. Remove those keys if the session reports a context window, \
+        model tier, or credential that disagrees with the server.
         """)
 }
 
 let settings: String
 do {
-    settings = try LaunchSettings.settingsJSON(baseURL: probeURL, authToken: token)
+    settings = try LaunchSettings.settingsJSON(baseURL: probeURL, authToken: authToken)
 } catch {
     fail(error)
 }

@@ -89,6 +89,12 @@ What the layer adds:
   against and says so when yours is newer, so "upstream may have fixed this" is
   something the tool tells you rather than something you have to remember.
 
+**What it does not do:** bound your context window.
+[#2716](https://github.com/jundot/omlx/issues/2716) remains unfixed here. The launch
+sets `CLAUDE_CODE_DISABLE_1M_CONTEXT`, but Claude Code honours that only for model ids
+it recognizes, and an oMLX-served id never is — it prints a warning saying as much at
+startup. Tracked as [#6](https://github.com/PsychQuant/omlx-connector/issues/6).
+
 It will keep existing after
 [#2715](https://github.com/jundot/omlx/issues/2715) and
 [#2716](https://github.com/jundot/omlx/issues/2716) are fixed — distribution, the
@@ -310,8 +316,8 @@ so leaving one out surfaces as a download error pointing nowhere useful.
 
 ## Related
 
-Two upstream issues, found while building usage 1, are why `omlx-claude` overrides
-what it overrides. They are filed against oMLX and remain open:
+Two upstream issues found while building usage 1. Both are filed against oMLX and
+remain open — but only the first is worked around here; the second is merely tracked:
 
 - [jundot/omlx#2715](https://github.com/jundot/omlx/issues/2715) — `ANTHROPIC_BASE_URL`
   set by the launcher is silently overridden by a `~/.claude/settings.json` `env`

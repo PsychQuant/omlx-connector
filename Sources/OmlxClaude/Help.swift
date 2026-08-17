@@ -51,8 +51,17 @@ enum LauncherIdentity {
         ENVIRONMENT
           OMLX_URL     Base URL used for the pre-launch reachability check
                        (default: http://\(ProbeTarget.defaultHost):\(ProbeTarget.defaultPort)).
-                       --host / --port take precedence over it.
-          OMLX_TOKEN   Auth token sent to the oMLX server (default: omlx).
+                       Its scheme and path are preserved; --host / --port override
+                       only the parts they name.
+          OMLX_TOKEN   Auth token for the oMLX server. --api-key outranks it. With
+                       neither, no credential is asserted and oMLX's own configured
+                       key is left in force.
+
+        ON CLAUDE_CODE_DISABLE_1M_CONTEXT
+        This launch sets it, and you should not read that as bounding your context.
+        Claude Code honours it only for model ids it recognizes, and an oMLX-served
+        id never is — it will tell you so itself at startup. It is therefore NOT a
+        fix for jundot/omlx#2716; see issue #6 in this repository.
 
         WHY THIS EXISTS RATHER THAN `omlx launch claude`
         `omlx launch claude` passes its configuration as environment variables, but

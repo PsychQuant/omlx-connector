@@ -107,10 +107,26 @@ else
     # Mach-O it finds in the archive, so a second executable costs no extra
     # round-trip — which is worth arranging, since each one is 2-10 minutes.
     echo "→ notarizing ${#RELEASE_BINARIES[@]} binaries (Apple round-trip is typically 2-10 minutes)"
-    ZIP="$DIST_DIR/notarize.zip"
+    # The archive is built OUTSIDE the directory it archives. Writing it into
+    # $DIST_DIR meant ditto was recursively reading a tree containing its own
+    # growing output — depending on traversal order that yields a corrupt archive
+    # or a failed build, and SKIP_NOTARIZE=1 is precisely the flag that hides it.
+    NOTARIZE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-notarize-XXXXXX")
+    trap 'rm -rf "$NOTARIZE_TMP"' EXIT
+    ZIP="$NOTARIZE_TMP/notarize.zip"
     ditto -c -k "$DIST_DIR" "$ZIP"
+
+    # Confirm the archive actually holds both binaries before spending an Apple
+    # round-trip on it. A short archive still notarizes fine — it just silently
+    # leaves one binary unnotarized, which surfaces on a user's machine, not here.
+    for binary in "${RELEASE_BINARIES[@]}"; do
+        unzip -l "$ZIP" | grep -q "[/ ]$binary\$" \
+            || { echo "✗ $binary missing from the notarization archive" >&2; exit 1; }
+    done
+
     xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-    rm -f "$ZIP"
+    rm -rf "$NOTARIZE_TMP"
+    trap - EXIT
     # Stapling is deliberately skipped: `stapler staple` does not support a bare
     # Mach-O. Gatekeeper resolves the notarization online instead.
 fi
