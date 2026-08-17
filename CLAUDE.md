@@ -113,7 +113,17 @@ Sources/OmlxClaude/                 usage 1 — the local model is the agent
   LaunchSettings.swift              what the --settings override covers, and what it only reports
   ProbeTarget.swift                 address + credential resolution, loopback gate, argparse-compatible flag scan
   Help.swift                        command name + help text
+
+plugin/bin/                         distribution — one download path, two callers
+  fetch-release-binary.sh           resolve → download → verify → atomic install
+  verify-download.sh                checksum + Developer ID requirement; refuses on either
+  omlx-connector-wrapper.sh         MCP server entry: delegates, then execs
+plugin/hooks/session-start.sh       usage-1 entry: delegates, then reports PATH state
 ```
+
+**Neither caller downloads anything itself.** They pass a binary name to
+`fetch-release-binary.sh` and that is all. This shape is not a preference — see
+"one call site at a time" below.
 
 **Core stays small on purpose.** It holds what more than one executable needs and
 nothing else. Adding a type here means widening its access level for every caller,
@@ -156,6 +166,17 @@ Conventions worth keeping:
 premise is that content stays on the machine. Tests cover it, including that the opt-in
 accepts *only* `1` (so a stray `true` does not open the door).
 
+**It parses the address; it does not match the spelling.** The check was once
+`hasPrefix("127.")`, and RFC 1123 permits a DNS label to begin with a digit — so
+`127.evil.example` is an ordinary registrable name that satisfied it, and reviewers
+demonstrated it passing on both binaries. `inet_pton` decides now, and `::1` is matched
+by its bytes rather than by string equality (which had been refusing
+`0:0:0:0:0:0:0:1` as remote).
+
+DNS is deliberately not consulted: resolving the name would make the answer depend on a
+lookup that can differ between the check and the connection that follows. A name is not
+this machine unless it is the literal `localhost`.
+
 **Every entry point must go through it.** `OmlxConfig.resolveBaseURL` does, for the MCP
 server; `ProbeTarget.resolveChecked` does, for the launcher. Adding a third path that
 resolves an address without consulting the policy reopens the hole described next.
@@ -189,7 +210,7 @@ weakening them.
 ## Build and release
 
 ```bash
-make build / make test / make ping
+make build / make test / make ping   # test = Swift suite + shell suites, both required
 make install                      # MCP server, ad-hoc signed into ~/bin, dev only
 make install-omlx-claude          # usage-1 command, same deal
 
@@ -218,5 +239,40 @@ the `OmlxClienting` protocol. When adding a tool, add it to `defineTools()` and 
 `executeToolCall`; `testEveryDeclaredToolDispatches` will catch the second if you
 forget it.
 
+`make test` also runs `scripts/tests/*.test.sh`. Those are not extras — the two things
+they assert cannot be expressed in the Swift suite: that `verify-download.sh` refuses a
+binary forging `TeamIdentifier` in `codesign` output, and that **no** script under
+`plugin/` downloads or execs without going through the shared fetcher.
+
 What the tests do *not* cover: anything requiring a live oMLX server. Verify those
 by hand with `make ping` and a real tool call before releasing.
+
+### Write the test so it can fail
+
+Three consecutive review rounds here found fixes shipped with tests that could not fail
+on the defect they were for. Each time the fixtures were drawn from the same mental
+model as the code, so they could not disconfirm it:
+
+- the IPv6 fix bracketed anything containing a colon; its two fixtures were `a b c` and
+  `a|b`, both colon-free.
+- the loopback fix matched `hasPrefix("127.")`; every near-miss fixture broke on the
+  character right after `127` (`127x.`, `1270.`), so none put a legitimate dot there.
+
+Run the new test against the old code and watch it fail *before* writing the fix. Two
+mistakes in the round-3 fixes were caught this way and never shipped.
+
+**A check that refuses everything passes every negative test.** The round-3 signature
+requirement was briefly malformed — codesign read it as a path and rejected all input.
+Eight "refuses X" cases stayed green; only the one positive case, "accepts a genuinely
+signed binary", noticed. Any gate needs at least one test that it must *not* refuse.
+
+### Fix the property, not the file
+
+Round 2 rated an unverified download CRITICAL. It was fixed in the file the report
+named, and round 3 found the sibling downloader in the same plugin — same release, other
+binary — still doing every one of the same things.
+
+`scripts/tests/no-unverified-download.test.sh` asserts the property instead: it scans
+every shipped script and fails if any of them downloads or execs outside the shared
+path. A third downloader added later goes red on its own, with nobody remembering to
+extend the test.

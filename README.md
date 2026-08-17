@@ -119,6 +119,10 @@ here is asserted into ANTHROPIC_BASE_URL at a higher precedence than anything el
 so the whole session, and the API token, would go there.
 ```
 
+The host is **parsed as an address**, not matched as text — `127.evil.example` is an
+ordinary registrable DNS name, and a check that accepted it because of how it is spelled
+would be no check at all.
+
 This is enforced in code rather than promised in documentation, because a privacy
 property that depends on nobody mis-editing a config file is not a privacy property.
 `OMLX_ALLOW_REMOTE=1` exists for the one legitimate exception — an oMLX instance on
@@ -320,6 +324,11 @@ export DEVELOPER_ID="<Developer ID certificate SHA-1>"
 export NOTARY_PROFILE="<notarytool keychain profile>"
 make release-signed
 ```
+
+Binaries reach users through `plugin/bin/fetch-release-binary.sh`, which refuses to
+install anything that does not match the published `.sha256` **and** carry a Developer ID
+signature from this project's team. Both the MCP wrapper and the session-start hook
+delegate to it, so there is one download path rather than two that can drift apart.
 
 Both binaries are signed and go to Apple in a single notarization submission, so
 the second one costs no extra round-trip. The script prints the exact
