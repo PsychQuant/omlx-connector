@@ -53,7 +53,18 @@ command -v codesign >/dev/null 2>&1 || refuse "verify: codesign unavailable — 
 # part worth remembering — refuses *everything*. That state passes every negative test
 # in the suite while breaking every real install. scripts/tests/verify-download.test.sh
 # carries a positive case for exactly this reason; it was the only thing that caught it.
-REQUIREMENT="=anchor apple generic and certificate leaf[subject.OU] = \"$TEAM_ID\""
+# The marker OID is what makes this a *Developer ID* requirement rather than "any Apple
+# certificate carrying this team's OU". Round 6 reproduced the difference: an Apple
+# Development certificate satisfied the OU-only form, because subject.OU *is* the team id on
+# both kinds — OU says which team, never which kind. Apple Development certs are issued to
+# anyone on the team, live on developer laptops, and say nothing about a release; accepting
+# one meant an attacker with any team member's dev cert could pass this gate.
+#
+#   1.2.840.113635.100.6.1.13 — Developer ID Application
+#
+# Verified both directions: the real signed binary still passes, an Apple Development
+# signature of the same binary is now refused.
+REQUIREMENT="=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$TEAM_ID\""
 if ! codesign --verify --strict -R "$REQUIREMENT" "$CANDIDATE" 2>/dev/null; then
     refuse "verify: not signed by Developer ID team $TEAM_ID — refusing to install"
 fi

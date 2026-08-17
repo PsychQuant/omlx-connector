@@ -114,6 +114,34 @@ TeamIdentifier=$TEAM_ID" "$TMP/forged" 2>/dev/null; then
 
     # And the positive case, when the real certificate is available. Without it the
     # suite would only ever prove this script says no.
+    # An Apple Development certificate from the SAME team must be refused. Round 6
+    # reproduced it passing: subject.OU is the team id on both certificate kinds, so an
+    # OU-only requirement cannot tell a dev cert from a Developer ID one. This case is the
+    # reason the requirement now names the Developer ID marker OID — without it, anyone
+    # holding any team member's development certificate satisfies the gate.
+    #
+    # Constructing the fixture is part of the assertion: if signing fails the binary is
+    # merely unsigned, would be refused for that instead, and this case would report `ok`
+    # while defending nothing.
+    APPLE_DEV=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -i "Apple Development" | head -1 | awk '{print $2}')
+    if [ -n "$APPLE_DEV" ] && [ -n "$BUILT" ]; then
+        cp "$BUILT" "$TMP/appledev"
+        if ! codesign --force --options runtime --sign "$APPLE_DEV" "$TMP/appledev" 2>/dev/null; then
+            echo "  FAIL — could not sign with Apple Development; this case proves nothing"
+            FAIL=$((FAIL + 1))
+        elif ! codesign -dv --verbose=4 "$TMP/appledev" 2>&1 | grep -q "Authority=Apple Development"; then
+            echo "  FAIL — fixture is not actually Apple Development-signed"
+            FAIL=$((FAIL + 1))
+        else
+            shasum -a 256 "$TMP/appledev" > "$TMP/appledev.sha256"
+            check "refuses an Apple Development cert from the same team" \
+                refuse "$TMP/appledev" "$TMP/appledev.sha256"
+        fi
+    else
+        skip "Apple Development case needs an Apple Development identity in the keychain"
+    fi
+
     if [ -n "${DEVELOPER_ID:-}" ]; then
         cp "$BUILT" "$TMP/signed"
         if codesign --force --options runtime --sign "$DEVELOPER_ID" "$TMP/signed" 2>/dev/null; then

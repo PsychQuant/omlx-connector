@@ -46,6 +46,21 @@ DATA_PATHS=".claude-plugin/plugin.json .mcp.json CLAUDE.md hooks/hooks.json skil
 
 in_list() { case " $2 " in *" $1 "*) return 0;; *) return 1;; esac; }
 
+# Comments describe the defects these files no longer have, so a scan that read prose would
+# flag the explanation as the offence — that happened once already.
+#
+# It must strip TRAILING comments too. Version 3 removed only comments that *start* a line,
+# so `: "skipping"   # TODO: call verify-download.sh` satisfied the clause requiring the
+# verifier to be run, with every check deleted. Round 2's original defect, third recurrence,
+# on the line below a comment naming it.
+#
+# In shell a `#` opens a comment only at the start of a word, so `${x#y}` and `http://a#b`
+# survive. Over-stripping would be the safe direction regardless: it removes text, making a
+# clause harder to satisfy rather than easier.
+strip_comments() {
+    sed -E 's/(^|[[:space:]])#.*$/\1/' "$1" 2>/dev/null | grep -vE '^[[:space:]]*$' || true
+}
+
 # Scans one plugin tree. Prints findings; returns non-zero if any file is unaccounted for
 # or misbehaves. Used for the real tree and for each adversarial fixture tree.
 scan_tree() {
@@ -54,7 +69,7 @@ scan_tree() {
     while IFS= read -r file; do
         local rel="${file#$plugin/}"
         local body
-        body=$(grep -vE '^[[:space:]]*(#|$)' "$file" 2>/dev/null || true)
+        body=$(strip_comments "$file")
 
         if in_list "$rel" "$DATA_PATHS"; then
             # Data files must not be executable scripts. A hook config pointing at an
@@ -70,7 +85,10 @@ scan_tree() {
             # The one permitted downloader. It must actually invoke the verifier by path,
             # not merely mention its name — a grep for the name is satisfied by a comment,
             # which is round 2's original defect.
-            if printf '%s' "$body" | grep -qE 'verify-download\.sh"?[[:space:]]' ; then
+            # An invocation — `bash "$DIR/verify-download.sh" …` — not a mention. Stripping
+            # trailing comments already kills a bare mention; requiring the verb makes that
+            # independent of how accurate the stripper is.
+            if printf '%s' "$body" | grep -qE '(bash|sh|exec|source|\.)[[:space:]]+[^|;&]*verify-download\.sh'; then
                 [ -z "$quiet" ] && ok "$label$rel is the permitted downloader and runs the verifier"
             else
                 [ -z "$quiet" ] && bad "$label$rel downloads without running the verifier"
@@ -114,14 +132,16 @@ if [ ! -d "$FIXTURES" ]; then
     bad "scripts/tests/fixtures/ is missing — the scanner has no case that must fail"
 else
     while IFS= read -r fixture; do
-        name=$(basename "$(dirname "$fixture")")/$(basename "$fixture")
-        [ "$(basename "$(dirname "$fixture")")" = "fixtures" ] && name=$(basename "$fixture")
-        [ "$name" = "README.md" ] && continue
+        # A fixture's path under fixtures/ IS where it installs under plugin/. Version 3
+        # dropped every fixture at plugin/hooks/<basename>, so three of the four clauses
+        # never saw a failing case: a fixture written for the fetcher clause landed on an
+        # unlisted path and was refused for being unlisted — passing while proving nothing.
+        name="${fixture#$FIXTURES/}"
 
         SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/scanner-fixture-XXXXXX")
         cp -R "$ROOT/plugin" "$SANDBOX/plugin"
-        # Same place the worst one actually appeared.
-        cp "$fixture" "$SANDBOX/plugin/hooks/$(basename "$fixture")"
+        mkdir -p "$SANDBOX/plugin/$(dirname "$name")"
+        cp "$fixture" "$SANDBOX/plugin/$name"
         if scan_tree "$SANDBOX/plugin" "" quiet; then
             bad "fixture $name was NOT refused — the scanner would miss it in plugin/"
         else
