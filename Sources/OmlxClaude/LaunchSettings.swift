@@ -130,9 +130,9 @@ enum LaunchSettings {
     /// Checking only the global file left the promise half-kept: project and local
     /// settings shadow the launcher's environment exactly as the global one does, so a
     /// conflict defined there produced no warning at all.
-    /// Ordered weakest-to-strongest, and the managed paths are last because they beat
-    /// even `--settings`. Omitting them meant the one scope we cannot override was also
-    /// the one scope we never mentioned.
+    /// Scopes that `--settings` **beats**, ordered weakest to strongest. These can be
+    /// merged into one dictionary because the verdict for every key in them is the same:
+    /// we win it.
     static func settingsScopePaths(
         home: URL = URL(fileURLWithPath: NSHomeDirectory()),
         workingDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -141,9 +141,52 @@ enum LaunchSettings {
             home.appendingPathComponent(".claude/settings.json"),
             workingDirectory.appendingPathComponent(".claude/settings.json"),
             workingDirectory.appendingPathComponent(".claude/settings.local.json"),
+        ]
+    }
+
+    /// The scope that beats `--settings`, kept **separate on purpose**.
+    ///
+    /// An earlier version appended these to the mergeable list, which made the promise
+    /// they were added for impossible to keep: once merged, a key cannot be attributed, so
+    /// `unwinnableConflicts` could not tell a user-scope `ANTHROPIC_BASE_URL` (which we
+    /// override successfully) from a managed one (which overrides us). Adding the key to
+    /// `reportableKeys` would then have warned every ordinary user about something that
+    /// works fine.
+    static func managedScopePaths() -> [URL] {
+        [
             URL(fileURLWithPath: "/Library/Application Support/ClaudeCode/managed-settings.json"),
             URL(fileURLWithPath: "/etc/claude-code/managed-settings.json"),
         ]
+    }
+
+    /// Keys a managed policy sets that we cannot override — **including the ones we
+    /// normally win**, which is the whole point of reading this scope separately.
+    ///
+    /// `ANTHROPIC_BASE_URL` is the one that matters. Four places (this file, README,
+    /// CLAUDE.md, and the shipped `--help`) claimed this warning existed while it did not,
+    /// and CLAUDE.md spelled out the consequence: on a managed Mac the loopback gate
+    /// verifies an address the session does not use. The gate says 127.0.0.1, the session
+    /// leaves for the policy endpoint, and the bearer token goes with it.
+    static func managedConflicts(managedSettings: [String: Any]) -> [String] {
+        guard let env = managedSettings["env"] as? [String: Any] else { return [] }
+        let keysWeWouldOtherwiseWin = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
+                                       "API_TIMEOUT_MS", "CLAUDE_CODE_DISABLE_1M_CONTEXT"]
+        return (keysWeWouldOtherwiseWin + reportableKeys(authToken: .unknown))
+            .filter { env[$0] != nil }.sorted()
+    }
+
+    /// Reads the managed scope alone, without merging it into anything.
+    ///
+    /// A missing or unreadable file is not an error: these paths are root-owned and absent
+    /// on an unmanaged Mac, which is the common case.
+    static func loadManagedSettings(paths: [URL] = managedScopePaths()) -> [String: Any] {
+        for path in paths {
+            guard let data = try? Data(contentsOf: path),
+                let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { continue }
+            return parsed
+        }
+        return [:]
     }
 
     /// Merged `env` blocks from every scope, later scopes winning.

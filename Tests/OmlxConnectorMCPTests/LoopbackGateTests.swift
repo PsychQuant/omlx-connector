@@ -233,6 +233,29 @@ final class LoopbackIsAddressNotTextTests: XCTestCase {
         }
     }
 
+    func testOctalDoesNotSurviveTheIPv4MappedRoute() {
+        // The v4 form was fixed and the v4-mapped-in-v6 form was not, because
+        // parseCanonicalIPv6's "re-parse and compare bytes" guard is a tautology:
+        // inet_pton(inet_ntop(x)) == x always holds, proved across 11 spellings. So v6 had
+        // no canonicalization at all, and `::ffff:0127.13.37.42` reached
+        // isIPv6Loopback with bytes 127.13.37.42 and was called loopback.
+        //
+        // Node rejects that URL today, which is *not* the reason it must be refused here:
+        // relying on a downstream parser happening to reject an address is the same
+        // reasoning that produced the original octal defect, where the preflight "worked"
+        // only because URLSession happened to agree with inet_pton.
+        for host in ["::ffff:0127.13.37.42", "::ffff:127.0.0.01", "::ffff:0127.0.0.1"] {
+            XCTAssertFalse(
+                LoopbackPolicy.isLoopback(host),
+                "\(host) embeds a non-canonical IPv4 literal")
+        }
+    }
+
+    func testCanonicalIPv4MappedLoopbackStillWorks() {
+        XCTAssertTrue(LoopbackPolicy.isLoopback("::ffff:127.0.0.1"))
+        XCTAssertFalse(LoopbackPolicy.isLoopback("::ffff:8.8.8.8"))
+    }
+
     func testNonCanonicalIPv6SpellingsAreRefused() {
         // Same reasoning for v6: leading zeros in a group are accepted by inet_pton but
         // are not the canonical form, and a parser downstream may normalize differently.

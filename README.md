@@ -74,8 +74,9 @@ What the layer adds:
   outranks the user, project and local settings files and applies to that launch only.
   Your own config is never modified. **One scope still beats it:** managed (MDM/policy)
   settings outrank command-line arguments, so on a managed Mac a policy
-  `ANTHROPIC_BASE_URL` wins over everything here. The command warns when it can see such
-  a key; it cannot override it.
+  `ANTHROPIC_BASE_URL` wins over everything here. Those files are read separately from
+  every other scope and such a key is named at launch — it cannot be overridden, so the
+  loopback check may have verified an address the session does not use.
 - **More than the endpoint.** `API_TIMEOUT_MS` is in the override too, and it is not
   decoration: the launcher sets it to 3,000,000 because a cold model load alone can
   outlast a normal timeout, and a settings file that shadows it aborts inference

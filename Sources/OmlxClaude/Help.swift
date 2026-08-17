@@ -68,8 +68,10 @@ enum LauncherIdentity {
         only for an oMLX instance on a machine you own.
 
         One scope beats --settings: managed (MDM / policy) settings. If your Mac is
-        managed and policy sets ANTHROPIC_BASE_URL, that wins over everything here —
-        this command warns when it can see such a key, but it cannot override it.
+        managed and policy sets ANTHROPIC_BASE_URL, that wins over everything here. The
+        managed files are read separately and any such key is named at launch — but it
+        cannot be overridden, so on a managed Mac the address checked above may not be
+        the address the session uses.
 
         ON CLAUDE_CODE_DISABLE_1M_CONTEXT
         This launch sets it, and you should not read that as bounding your context.

@@ -41,9 +41,12 @@ CLI argument, so it outranks the user's `settings.json` — that is the whole
 mechanism against [#2715](https://github.com/jundot/omlx/issues/2715)). **It does not
 outrank managed/MDM policy settings**, which sit above command-line arguments; on a
 managed Mac #2715 is not worked around and the loopback gate will have verified an address
-the session does not use. Those paths are scanned so the conflict is at least named — see
-`LaunchSettings.settingsScopePaths`. Any text here claiming `--settings` "outranks
-everything" is wrong; five such claims had to be corrected at once.) Keys whose
+the session does not use. The managed files are read by `LaunchSettings.loadManagedSettings` and reported by
+`managedConflicts`, **separately from every other scope** — merging them made the promise
+unkeepable, because a merged key cannot be attributed and `ANTHROPIC_BASE_URL` is one we
+normally win. Any text claiming `--settings` "outranks everything" is wrong; five such
+claims had to be corrected at once, and the warning they described did not exist for a
+further round after that.) Keys whose
 values depend on which model oMLX ends up serving are **reported, not guessed**: see
 `LaunchSettings.modelDependentKeys`. Moving one from the second list to the first
 means reimplementing oMLX's model selection, which is the fork above.
@@ -307,8 +310,34 @@ Round 2 rated an unverified download CRITICAL. It was fixed in the file the repo
 named, and round 3 found the sibling downloader in the same plugin — same release, other
 binary — still doing every one of the same things.
 
-`scripts/tests/no-unverified-download.test.sh` asserts the property instead — but the
-first version of it still did not, and how it failed is the point.
+`scripts/tests/no-unverified-download.test.sh` asserts the property instead — and took
+**three** attempts to actually do it, which is the more useful lesson than the eventual
+shape.
+
+Version 3 is an allowlist over **repo-relative paths**, plus a directory of adversarial
+fixtures the scanner must refuse. Both halves were necessary and neither was obvious:
+
+- **The allowlist must be over files, not spellings.** Version 2 called itself an
+  allowlist while being three denylists — a `*.sh` glob, a mechanism regex, a path regex.
+  A reviewer defeated it with a downloader in `plugin/hooks/` that had no `.sh` suffix, so
+  `find` never enumerated it; `hooks.json` accepts any executable path, so that is a real
+  surface. It reported 6 passed / 0 failed with a verbatim copy of the round-2 CRITICAL
+  sitting in the shipped directory. Version 2 also authorized by **basename**, so any file
+  named `fetch-release-binary.sh` anywhere under `plugin/` inherited the download
+  privilege, and its "must call the verifier" check was a `grep` that a comment satisfied
+  — round 2's original defect, reproduced inside the check written to prevent it.
+- **The scanner needs cases that must fail.** Versions 1 and 2 had none: they only asserted
+  that the compliant files were compliant, so blanking a pattern left them green. Round 4
+  had already recorded the dual of this — a check that refuses everything passes every
+  negative test — and the dual was not applied. `scripts/tests/fixtures/` now holds four
+  downloaders, each of which a previous version reported clean, and each must be refused.
+  Verified by deleting the allowlist clause: all four go red.
+
+**Adding a fixture is how you extend that test.** Do not add a clause without one, and do
+not delete a fixture because it now passes.
+
+The rest of this section is the earlier version's account, kept because the failure is
+instructive:
 
 It enumerated what a violation looks like: grep for `curl`, grep for `chmod +x`. A
 reviewer said that matched spellings rather than the property. Trying to break it took one

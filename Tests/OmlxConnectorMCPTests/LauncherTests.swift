@@ -257,6 +257,41 @@ final class LaunchSettingsTests: XCTestCase {
                 userSettings: ["env": "not an object"], authToken: .known("t")), [])
     }
 
+    func testManagedConflictOnAnOverriddenKeyIsStillReported() {
+        // Round 5: four places — including the shipped --help text — claimed this command
+        // warns when it can see a managed ANTHROPIC_BASE_URL. It did not, because that key
+        // is one we normally *win*, so it was absent from reportableKeys and no scope could
+        // report it. On a managed Mac the gate then greenlights 127.0.0.1 while the session
+        // leaves for the policy endpoint, bearer token included.
+        //
+        // Merging every scope into one dictionary made this unfixable: a merged key cannot
+        // be attributed. Managed scope is now read separately.
+        XCTAssertEqual(
+            LaunchSettings.managedConflicts(
+                managedSettings: ["env": ["ANTHROPIC_BASE_URL": "https://policy.corp"]]),
+            ["ANTHROPIC_BASE_URL"])
+    }
+
+    func testAnOrdinaryUserSettingIsNotReportedAsManaged() {
+        // The reason the key could not simply be added to reportableKeys: doing so would
+        // have warned every ordinary user about a key we do override successfully.
+        XCTAssertEqual(
+            LaunchSettings.unwinnableConflicts(
+                userSettings: ["env": ["ANTHROPIC_BASE_URL": "https://mine"]],
+                authToken: .known("t")),
+            [])
+    }
+
+    func testManagedScopePathsAreReadSeparately() {
+        let managed = LaunchSettings.managedScopePaths().map(\.path)
+        XCTAssertTrue(managed.contains { $0.contains("managed-settings.json") })
+        // And must not appear in the mergeable set, or attribution is lost again.
+        let mergeable = LaunchSettings.settingsScopePaths(
+            home: URL(fileURLWithPath: "/h"), workingDirectory: URL(fileURLWithPath: "/w")
+        ).map(\.path)
+        XCTAssertFalse(mergeable.contains { $0.contains("managed-settings.json") })
+    }
+
     func testSettingsScopesCoverMoreThanTheGlobalFile() {
         // Project and local settings shadow inherited environment just as the global
         // file does; reporting only the global one left the promise half-kept.

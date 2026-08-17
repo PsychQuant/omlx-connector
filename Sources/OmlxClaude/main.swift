@@ -135,6 +135,22 @@ do {
 // Keys we decline to assert — those whose values depend on oMLX's model selection,
 // plus the credential when the operator did not supply one. Name them instead of
 // pretending we control them.
+// Managed policy outranks --settings, so a key set there is one we lose outright. It is
+// read separately from everything else: merged into the other scopes it could not be
+// attributed, and a key like ANTHROPIC_BASE_URL is one we normally win.
+let managed = LaunchSettings.managedConflicts(
+    managedSettings: LaunchSettings.loadManagedSettings())
+if !managed.isEmpty {
+    note(
+        """
+        \(LauncherIdentity.name): managed (MDM/policy) settings on this Mac set \
+        \(managed.joined(separator: ", ")), which outrank even the --settings this \
+        command passes. Those values win, so the address checked above may not be the \
+        address the session uses. Ask whoever manages this Mac before relying on the \
+        loopback guarantee here.
+        """)
+}
+
 let conflicts = LaunchSettings.unwinnableConflicts(
     userSettings: LaunchSettings.loadUserSettings(), authToken: authToken)
 if !conflicts.isEmpty {

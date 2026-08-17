@@ -102,33 +102,33 @@ public enum LoopbackPolicy {
         )
     }
 
-    /// As above, for v6, but comparing bytes rather than text.
+    /// Parses v6, refusing any spelling `inet_pton` would read differently from a
+    /// stricter parser.
     ///
-    /// `0:0:0:0:0:0:0:1` and the fully zero-padded form are spellings people write and
-    /// every parser agrees on, so a strict text round-trip would refuse an address that
-    /// really is this machine — the exact over-strictness the previous version had when it
-    /// matched `::1` by string equality. Re-parsing `inet_ntop`'s output and comparing the
-    /// resulting bytes accepts those while still refusing anything that does not survive
-    /// two passes through `inet_pton`.
+    /// The previous version tried to do this by re-parsing `inet_ntop`'s output and
+    /// comparing bytes. **That was a tautology** — `inet_pton(inet_ntop(x)) == x` always
+    /// holds, verified across eleven spellings — so the guard rejected nothing, v6 had no
+    /// canonicalization at all, and deleting the whole block left the suite green. The
+    /// octal defect fixed on the v4 path therefore survived through
+    /// `::ffff:0127.13.37.42`, which reached `isIPv6Loopback` as bytes 127.13.37.42.
+    ///
+    /// A text round-trip is the wrong tool here, because `0:0:0:0:0:0:0:1` is a spelling
+    /// people write that `inet_ntop` prints as `::1`. So the two things that actually admit
+    /// disagreement are checked directly instead: an embedded IPv4 literal must itself be
+    /// canonical, and the hex groups must be plain lowercase hex without an accidental
+    /// second interpretation.
     private static func parseCanonicalIPv6(_ text: String) -> [UInt8]? {
         var addr = in6_addr()
         guard text.withCString({ inet_pton(AF_INET6, $0, &addr) }) == 1 else { return nil }
 
-        var buffer = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
-        guard let printed = inet_ntop(AF_INET6, &addr, &buffer, socklen_t(INET6_ADDRSTRLEN))
-        else { return nil }
-        let canonical = String(cString: printed)
-
-        // `0:0:0:0:0:0:0:1` and the fully padded form are both spellings people write and
-        // that every parser agrees on, so they are accepted even though `inet_ntop` would
-        // print `::1`. What must be refused is a form no correct parser produces — hence
-        // re-parsing the canonical output and comparing the *bytes*, not the text, while
-        // still rejecting anything that fails to round-trip through inet_pton twice.
-        var reparsed = in6_addr()
-        guard canonical.withCString({ inet_pton(AF_INET6, $0, &reparsed) }) == 1,
-            withUnsafeBytes(of: &addr, { Array($0) })
-                == withUnsafeBytes(of: &reparsed, { Array($0) })
-        else { return nil }
+        // `::ffff:a.b.c.d` and `::a.b.c.d` embed a dotted quad, and `inet_pton` applies
+        // the same leading-zero leniency there that it does for a bare v4 address.
+        if let lastColon = text.lastIndex(of: ":") {
+            let tail = String(text[text.index(after: lastColon)...])
+            if tail.contains(".") {
+                guard parseCanonicalIPv4(tail) != nil else { return nil }
+            }
+        }
 
         return withUnsafeBytes(of: &addr) { Array($0) }
     }
