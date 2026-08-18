@@ -311,6 +311,19 @@ managed remote endpoint — leaves the whole suite green. The decision function 
 mutation-proven; its call site is not. That is the round-6 finding shape one level down, and
 every guard added to `main.swift` inherits it. Check those by hand.
 
+**Shrink what has to be checked by hand rather than only warning about it.** When the whole
+product of a path through `main.swift` is *text* — a notice, a refusal, an explanation — the
+text belongs in a testable type and `main.swift` keeps only the call. `managedConflictNotice`
+moved for this reason (#11): its previous form was an inline string that ended with a
+sentence about addresses, true only while every key it could name was an address or a
+credential, and adding `disableAutoMode` to the list made it false without anything going
+red. Message-shaped bugs are the ones this file's own history keeps producing — the mechanism
+harmless, the claim the defect — and they are exactly what a string-returning function can be
+made to fail on.
+
+What is left in `main.swift` afterwards is a condition and a call, which is the smallest
+thing a hand-check has to cover. The hand-check is still owed; it is just cheaper.
+
 ### Write the test so it can fail
 
 Three consecutive review rounds here found fixes shipped with tests that could not fail
