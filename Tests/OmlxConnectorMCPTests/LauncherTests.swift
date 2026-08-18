@@ -171,9 +171,10 @@ final class LaunchSettingsTests: XCTestCase {
     func testOverridesCarryTheKeysSettingsFilesShadow() throws {
         let json = try LaunchSettings.settingsJSON(
             baseURL: "http://127.0.0.1:8000", authToken: .known("omlx"))
-        let parsed =
-            try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: String]]
-        let env = try XCTUnwrap(parsed?["env"])
+        // The payload carries non-`env` members since #11, so it is [String: Any] now and
+        // `env` has to be unwrapped on its own.
+        let parsed = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        let env = try XCTUnwrap(parsed?["env"] as? [String: String])
 
         XCTAssertEqual(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8000")
         XCTAssertEqual(env["ANTHROPIC_AUTH_TOKEN"], "omlx")
@@ -188,9 +189,8 @@ final class LaunchSettingsTests: XCTestCase {
         // overriding would replace a working credential with a guess.
         let json = try LaunchSettings.settingsJSON(
             baseURL: "http://127.0.0.1:8000", authToken: .unknown)
-        let parsed =
-            try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: [String: String]]
-        let env = try XCTUnwrap(parsed?["env"])
+        let parsed = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]
+        let env = try XCTUnwrap(parsed?["env"] as? [String: String])
 
         XCTAssertNil(env["ANTHROPIC_AUTH_TOKEN"])
         XCTAssertEqual(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:8000")
@@ -375,5 +375,83 @@ final class AutoModeOptInTests: XCTestCase {
         }
         XCTAssertTrue(LaunchSettings.autoModeOptIn(environment: ["OMLX_ALLOW_AUTO_MODE": "1"]))
         XCTAssertFalse(LaunchSettings.autoModeOptIn(environment: [:]))
+    }
+}
+
+/// The payload's *shape* is the defect #11 is about. `disableAutoMode` is a top-level
+/// settings key, not an environment variable, and `settingsJSON` used to emit
+/// `["env": …]` and nothing else — so there was no slot for it, nor for any other
+/// non-`env` setting this launcher might ever need to assert.
+final class SettingsPayloadShapeTests: XCTestCase {
+
+    private func payload(environment: [String: String]) throws -> [String: Any] {
+        let json = try LaunchSettings.settingsJSON(
+            baseURL: "http://127.0.0.1:8000", authToken: .known("omlx"),
+            environment: environment)
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
+    }
+
+    func testPayloadCarriesDisableAutoModeAtTopLevel() throws {
+        let parsed = try payload(environment: [:])
+        XCTAssertEqual(parsed["disableAutoMode"] as? String, "disable")
+        // Not smuggled into env: it is not an environment variable, and Claude Code would
+        // not read it as one.
+        XCTAssertNil((parsed["env"] as? [String: String])?["disableAutoMode"])
+    }
+
+    func testOptInSuppressesTheKey() throws {
+        // The one case that must NOT be refused. Without it, hard-coding the key
+        // unconditionally would satisfy every negative test in this file — the failure this
+        // repo already had once, when a malformed codesign requirement refused all input and
+        // eight "refuses X" cases stayed green.
+        let parsed = try payload(environment: ["OMLX_ALLOW_AUTO_MODE": "1"])
+        XCTAssertNil(parsed["disableAutoMode"])
+    }
+
+    /// Characterization, not a red-first test: it passes before and after. Its job is to fail
+    /// if widening the payload drops an `env` key on the way past, which is the real risk in
+    /// this change — the new key is visible, a silently missing old one is not.
+    func testEnvOverridesSurviveThePayloadChange() throws {
+        let parsed = try payload(environment: [:])
+        let env = try XCTUnwrap(parsed["env"] as? [String: String])
+        let expected = LaunchSettings.overrides(
+            baseURL: "http://127.0.0.1:8000", authToken: .known("omlx"))
+        XCTAssertEqual(env, expected)
+        XCTAssertFalse(expected.isEmpty)
+    }
+}
+
+/// Managed policy outranks `--settings`, so a policy that re-enables auto mode wins and we
+/// can only name it. Naming it correctly means looking where it actually lives.
+final class ManagedAutoModeTests: XCTestCase {
+
+    func testManagedTopLevelDisableAutoModeIsNamed() {
+        // The trap this test exists for: `managedConflicts` reads managedSettings["env"],
+        // and `disableAutoMode` is NOT an environment variable — it is a top-level settings
+        // key. Registering it among the env-scanned keys would produce a check that can
+        // never fire, which is the inert-mechanism failure this repo already shipped once
+        // with CLAUDE_CODE_DISABLE_1M_CONTEXT.
+        let managed: [String: Any] = ["disableAutoMode": "disable"]
+        XCTAssertTrue(LaunchSettings.managedConflicts(managedSettings: managed)
+            .contains("disableAutoMode"))
+    }
+
+    func testManagedNestedPermissionsFormIsNamedToo() {
+        // Claude Code documents `permissions.disableAutoMode` as an accepted spelling. A
+        // check that only knew the top-level one would miss half the policies that set it.
+        let managed: [String: Any] = ["permissions": ["disableAutoMode": "disable"]]
+        XCTAssertTrue(LaunchSettings.managedConflicts(managedSettings: managed)
+            .contains("permissions.disableAutoMode"))
+    }
+
+    func testManagedSettingsWithoutTheKeyStayQuiet() {
+        // The positive case, in the "must not refuse everything" sense: a managed file that
+        // says nothing about auto mode must not be reported as conflicting about it.
+        let managed: [String: Any] = ["env": ["ANTHROPIC_BASE_URL": "http://127.0.0.1:8000"]]
+        let named = LaunchSettings.managedConflicts(managedSettings: managed)
+        XCTAssertFalse(named.contains("disableAutoMode"))
+        XCTAssertFalse(named.contains("permissions.disableAutoMode"))
+        XCTAssertTrue(named.contains("ANTHROPIC_BASE_URL"))
     }
 }

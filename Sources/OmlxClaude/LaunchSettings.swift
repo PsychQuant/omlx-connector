@@ -125,12 +125,42 @@ enum LaunchSettings {
         environment["OMLX_ALLOW_AUTO_MODE"] == "1"
     }
 
+    /// Everything the `--settings` argument asserts, `env` being one member of it.
+    ///
+    /// This used to *be* the `env` dictionary, and that shape was the defect behind #11:
+    /// `disableAutoMode` is a top-level settings key rather than an environment variable, so
+    /// there was nowhere to put it — and nowhere for any other non-`env` setting either.
+    ///
+    /// It also adds a third category to the split described at the top of this file. Besides
+    /// keys we override and keys we only report, there are now keys we set *on the operator's
+    /// behalf*: defaults that are right for a local model driving the session, which the
+    /// operator can take back explicitly.
+    static func settingsPayload(
+        baseURL: String,
+        authToken: ProbeTarget.AuthToken,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: Any] {
+        var payload: [String: Any] = ["env": overrides(baseURL: baseURL, authToken: authToken)]
+
+        // Auto mode hands review to a classifier on the assumption that the acting model is
+        // a hosted one. This command replaces the acting model, so the assumption does not
+        // hold and the launch turns it off — unless the operator says otherwise.
+        if !autoModeOptIn(environment: environment) {
+            payload["disableAutoMode"] = "disable"
+        }
+
+        return payload
+    }
+
     /// The `--settings` JSON value. Claude Code accepts a literal JSON string here, so
     /// nothing is written to disk and the user's own config is never touched.
-    static func settingsJSON(baseURL: String, authToken: ProbeTarget.AuthToken) throws
-        -> String
-    {
-        let payload = ["env": overrides(baseURL: baseURL, authToken: authToken)]
+    static func settingsJSON(
+        baseURL: String,
+        authToken: ProbeTarget.AuthToken,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> String {
+        let payload = settingsPayload(
+            baseURL: baseURL, authToken: authToken, environment: environment)
         let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
         guard let text = String(data: data, encoding: .utf8) else {
             throw LaunchError.settingsEncodingFailed
@@ -181,11 +211,26 @@ enum LaunchSettings {
     /// verifies an address the session does not use. The gate says 127.0.0.1, the session
     /// leaves for the policy endpoint, and the bearer token goes with it.
     static func managedConflicts(managedSettings: [String: Any]) -> [String] {
-        guard let env = managedSettings["env"] as? [String: Any] else { return [] }
+        let env = managedSettings["env"] as? [String: Any] ?? [:]
         let keysWeWouldOtherwiseWin = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY",
                                        "API_TIMEOUT_MS", "CLAUDE_CODE_DISABLE_1M_CONTEXT"]
-        return (keysWeWouldOtherwiseWin + reportableKeys(authToken: .unknown))
-            .filter { env[$0] != nil }.sorted()
+        let fromEnv = (keysWeWouldOtherwiseWin + reportableKeys(authToken: .unknown))
+            .filter { env[$0] != nil }
+
+        // `disableAutoMode` is **not** an environment variable, so scanning `env` for it
+        // would be a check that can never fire — the inert-mechanism shape this repo already
+        // shipped once. It sits at the top level of a settings file, and Claude Code
+        // documents `permissions.disableAutoMode` as a second accepted spelling; a policy
+        // using the one we did not look for would go unnamed.
+        var fromTopLevel: [String] = []
+        if managedSettings["disableAutoMode"] != nil { fromTopLevel.append("disableAutoMode") }
+        if let permissions = managedSettings["permissions"] as? [String: Any],
+            permissions["disableAutoMode"] != nil
+        {
+            fromTopLevel.append("permissions.disableAutoMode")
+        }
+
+        return (fromEnv + fromTopLevel).sorted()
     }
 
     /// Whether a managed `ANTHROPIC_BASE_URL` permits launching at all.
