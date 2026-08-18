@@ -264,6 +264,37 @@ enum LaunchSettings {
         return (fromEnv + fromTopLevel).sorted()
     }
 
+    /// What to say about keys a managed policy has taken away from us.
+    ///
+    /// This lives here rather than in `main.swift` for the reason CLAUDE.md gives about that
+    /// file: nothing there is unit-tested, and a mutation in it leaves the suite green. The
+    /// text is the whole product of this path, so it is the part worth pinning.
+    ///
+    /// The address sentence is conditional, and #11 is why. It used to be unconditional,
+    /// which was true while every key this could name was an address or a credential. Adding
+    /// `disableAutoMode` made it false for some inputs — a notice that answers a question the
+    /// operator did not ask, about a guarantee this key has nothing to do with.
+    static func managedConflictNotice(keys: [String]) -> String {
+        let named = keys.joined(separator: ", ")
+        var text = """
+            managed (MDM/policy) settings on this Mac set \(named), which outrank even the \
+            --settings this command passes. Those values win, so what this launch asserts \
+            for them is not what the session will use.
+            """
+
+        let addressKeys: Set<String> = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
+                                        "ANTHROPIC_API_KEY"]
+        if keys.contains(where: addressKeys.contains) {
+            text += """
+                 The address checked a moment ago may therefore not be the address the \
+                session uses. Ask whoever manages this Mac before relying on the loopback \
+                guarantee here.
+                """
+        }
+
+        return text
+    }
+
     /// Whether a managed `ANTHROPIC_BASE_URL` permits launching at all.
     ///
     /// Naming an unwinnable conflict is the right response for most keys. For this one it is

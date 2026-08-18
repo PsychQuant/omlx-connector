@@ -504,3 +504,37 @@ final class DeliberateAutoModeDetectionTests: XCTestCase {
         XCTAssertFalse(requested(["--permission", "auto"]))
     }
 }
+
+/// The managed-conflict notice used to be one fixed sentence about addresses, written when
+/// every key it could name was an address or a credential. #11 added `disableAutoMode` to
+/// that list, at which point the sentence "the address checked above may not be the address
+/// the session uses" became a false statement for some inputs — the mechanism harmless, the
+/// claim the defect, which is this repo's recurring shape.
+final class ManagedConflictNoticeTests: XCTestCase {
+
+    func testAddressSentenceAppearsOnlyWhenAnAddressKeyIsNamed() {
+        let aboutAuto = LaunchSettings.managedConflictNotice(keys: ["disableAutoMode"])
+        XCTAssertFalse(aboutAuto.lowercased().contains("address"),
+            "a notice naming only disableAutoMode must not talk about addresses")
+        XCTAssertTrue(aboutAuto.contains("disableAutoMode"))
+
+        let aboutURL = LaunchSettings.managedConflictNotice(keys: ["ANTHROPIC_BASE_URL"])
+        XCTAssertTrue(aboutURL.lowercased().contains("address"),
+            "the address warning must survive for the key it was written for")
+    }
+
+    func testMixedKeysStillGetTheAddressSentence() {
+        let both = LaunchSettings.managedConflictNotice(
+            keys: ["ANTHROPIC_BASE_URL", "disableAutoMode"])
+        XCTAssertTrue(both.lowercased().contains("address"))
+        XCTAssertTrue(both.contains("disableAutoMode"))
+    }
+
+    func testEveryNamedKeyReachesTheText() {
+        // A notice that dropped a key would be worse than none: it reads as a complete list.
+        let notice = LaunchSettings.managedConflictNotice(
+            keys: ["API_TIMEOUT_MS", "permissions.disableAutoMode"])
+        XCTAssertTrue(notice.contains("API_TIMEOUT_MS"))
+        XCTAssertTrue(notice.contains("permissions.disableAutoMode"))
+    }
+}

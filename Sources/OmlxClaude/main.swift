@@ -172,14 +172,10 @@ if case .refuse(let host) = LaunchSettings.managedBaseURLVerdict(managedSettings
 
 let managed = LaunchSettings.managedConflicts(managedSettings: managedSettings)
 if !managed.isEmpty {
-    note(
-        """
-        \(LauncherIdentity.name): managed (MDM/policy) settings on this Mac set \
-        \(managed.joined(separator: ", ")), which outrank even the --settings this \
-        command passes. Those values win, so the address checked above may not be the \
-        address the session uses. Ask whoever manages this Mac before relying on the \
-        loopback guarantee here.
-        """)
+    // The wording lives in LaunchSettings so it can be tested: since #11 this list can name
+    // keys that have nothing to do with the address, and the sentence about addresses has to
+    // stop appearing for those.
+    note("\(LauncherIdentity.name): \(LaunchSettings.managedConflictNotice(keys: managed))")
 }
 
 let conflicts = LaunchSettings.unwinnableConflicts(
