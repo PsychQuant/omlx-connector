@@ -23,7 +23,9 @@ enum LauncherIdentity {
           \(name) --help, -h               Print this message
 
         Every other argument is forwarded to Claude Code untouched, so --resume,
-        --continue, --permission-mode and the rest behave as they always do.
+        --continue and the rest behave as they always do. One exception: this launch
+        turns auto mode off, which also overrides --permission-mode auto. See AUTO
+        MODE below.
 
         FLAGS THAT DO NOT REACH CLAUDE CODE
         These belong to oMLX. `omlx launch` parses them itself, so `claude` never
@@ -58,6 +60,26 @@ enum LauncherIdentity {
                        key is left in force.
           OMLX_ALLOW_REMOTE
                        Set to exactly 1 to permit a non-loopback server. See below.
+          OMLX_ALLOW_AUTO_MODE
+                       Set to exactly 1 to leave Claude Code's auto mode alone. See
+                       AUTO MODE below.
+
+        AUTO MODE
+        This launch asserts `disableAutoMode`, so the session does not start in auto
+        mode and `auto` is absent from the Shift+Tab cycle. Auto mode is Claude Code's
+        built-in starting mode on Pro, Max and Team plans: a classifier reviews each
+        action instead of you. That trade is calibrated for a hosted model doing the
+        acting — and replacing the acting model with a local one is the entire point of
+        this command, so the calibration no longer holds.
+
+        Passing --permission-mode auto is overridden by this, and you will be told when
+        that happens rather than left to find out. To keep auto mode, set
+        OMLX_ALLOW_AUTO_MODE=1; exactly 1, as with OMLX_ALLOW_REMOTE.
+
+        Two limits worth stating plainly. Managed (MDM/policy) settings outrank
+        --settings, so a policy enabling auto mode wins and is only named here. And a
+        --settings of your own is parsed after ours, so this asserts auto mode off — it
+        does not guarantee it stays off (issue #10).
 
         THE LOOPBACK GATE
         A non-loopback --host or OMLX_URL is refused unless OMLX_ALLOW_REMOTE=1. This

@@ -51,6 +51,29 @@ values depend on which model oMLX ends up serving are **reported, not guessed**:
 `LaunchSettings.modelDependentKeys`. Moving one from the second list to the first
 means reimplementing oMLX's model selection, which is the fork above.
 
+There is now a third category, added by #11: keys we set **on the operator's behalf** —
+defaults that are right because a local model is driving, which the operator can take back
+explicitly. `disableAutoMode` is the first, with `OMLX_ALLOW_AUTO_MODE=1` as its opt-out.
+This category is the one to be most careful with, because unlike the other two it changes
+behaviour the operator did not ask about.
+
+Adding it required widening the payload: `settingsJSON` emitted `["env": …]` and nothing
+else, so a top-level settings key had nowhere to go. `LaunchSettings.settingsPayload` is
+now the assembly point, and `env` is one member of it.
+
+**A key in this third category needs its `managedConflicts` entry chosen by where it
+actually lives.** `managedConflicts` filters `managedSettings["env"]`, so registering a
+non-`env` key there produces a check that can never fire — coverage-shaped and inert, the
+`CLAUDE_CODE_DISABLE_1M_CONTEXT` mistake one level down. `disableAutoMode` is read from the
+managed file's top level *and* from `permissions.disableAutoMode`, because Claude Code
+documents both spellings and a policy using the unwatched one would go unnamed.
+
+The same trap sits in argv scanning: `ProbeTarget.value` resolves tokens through
+`matchOption`, which only knows `omlxOptions`, so it returns nil for any Claude Code flag
+under every input. `LaunchSettings.deliberateAutoModeRequested` scans separately and matches
+exactly — Claude Code's parser takes no argparse-style prefixes, and inventing them would
+report a flag nobody passed.
+
 ### What it actually works around, and what it only tracks
 
 [#2715](https://github.com/jundot/omlx/issues/2715) **is** worked around, by the

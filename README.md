@@ -77,6 +77,15 @@ What the layer adds:
   `ANTHROPIC_BASE_URL` wins over everything here. Those files are read separately from
   every other scope and such a key is named at launch — it cannot be overridden, so the
   loopback check may have verified an address the session does not use.
+- **Auto mode off, because the premise changed.** Auto mode is Claude Code's built-in
+  starting mode on Pro, Max and Team plans, and in it a classifier reviews each action
+  instead of you — a trade calibrated for a hosted model doing the acting. Swapping in a
+  local model is what this command is *for*, so the launch asserts `disableAutoMode` and
+  the session starts in Manual, with `auto` absent from the Shift+Tab cycle. Pass
+  `--permission-mode auto` and you are told it was overridden rather than left to find
+  out. `OMLX_ALLOW_AUTO_MODE=1` — exactly `1` — keeps auto mode. Note the claim's size:
+  the launch *asserts* auto mode off. Managed policy outranks `--settings`, and a
+  `--settings` of your own is parsed after ours ([#10](https://github.com/PsychQuant/omlx-connector/issues/10)).
 - **More than the endpoint.** `API_TIMEOUT_MS` is in the override too, and it is not
   decoration: the launcher sets it to 3,000,000 because a cold model load alone can
   outlast a normal timeout, and a settings file that shadows it aborts inference
