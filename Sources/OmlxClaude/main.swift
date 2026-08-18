@@ -74,6 +74,28 @@ case .newerThanVerified(let notice), .unreadable(let notice):
     note("\(LauncherIdentity.name): \(notice)")
 }
 
+// This launch turns auto mode off, and Claude Code downgrades a `--permission-mode auto`
+// session to `default` without a word when it does. An overridden *deliberate* choice is the
+// one thing this launcher does not swallow — the same reason `unwinnableConflicts` and
+// `managedConflicts` exist.
+//
+// It sits here, ahead of the preflight, because it is a fact about argv and owes nothing to
+// whether the server answers. That also makes it checkable by hand without a running oMLX,
+// which matters more than usual: nothing in this file has a unit test, and a mutation here
+// leaves the whole suite green.
+if !LaunchSettings.autoModeOptIn(),
+    LaunchSettings.deliberateAutoModeRequested(arguments: forwarded)
+{
+    note(
+        """
+        \(LauncherIdentity.name): you passed --permission-mode auto, but this launch turns \
+        auto mode off, so the session starts in default instead. Auto mode hands review of \
+        each action to a classifier, on the premise that a hosted model is the one acting; \
+        here the model is local, which is the premise this command changes. Set \
+        OMLX_ALLOW_AUTO_MODE=1 to keep auto mode.
+        """)
+}
+
 // Every input here is user-supplied, so an unusable one is reported, never trapped
 // on. `--host ::1` used to reach a force-unwrap and take the process down with
 // SIGTRAP and no message at all.

@@ -125,6 +125,37 @@ enum LaunchSettings {
         environment["OMLX_ALLOW_AUTO_MODE"] == "1"
     }
 
+    /// Whether the forwarded arguments ask for auto mode outright.
+    ///
+    /// `disableAutoMode` downgrades such a session to `default` without saying so, and an
+    /// overridden deliberate choice is exactly what this launcher names elsewhere rather than
+    /// swallowing (`unwinnableConflicts`, `managedConflicts`).
+    ///
+    /// **`ProbeTarget.value` cannot be reused here**, though it looks like the right tool.
+    /// It resolves tokens through `matchOption`, which only recognizes `omlxOptions`;
+    /// `--permission-mode` belongs to Claude Code, so that scanner would return nil for it
+    /// forever — a detector that can never fire. The discipline is shared, the mechanism is
+    /// not: stop at `--`, accept the `=` form, last occurrence wins. Matching is exact,
+    /// because Claude Code's parser does not take argparse-style prefixes and inventing that
+    /// would report a flag the operator never passed.
+    static func deliberateAutoModeRequested(arguments: [String]) -> Bool {
+        var requested = false
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument == "--" { break }
+
+            if argument == "--permission-mode", index + 1 < arguments.count {
+                requested = arguments[index + 1] == "auto"
+                index += 1
+            } else if argument.hasPrefix("--permission-mode=") {
+                requested = argument.dropFirst("--permission-mode=".count) == "auto"
+            }
+            index += 1
+        }
+        return requested
+    }
+
     /// Everything the `--settings` argument asserts, `env` being one member of it.
     ///
     /// This used to *be* the `env` dictionary, and that shape was the defect behind #11:

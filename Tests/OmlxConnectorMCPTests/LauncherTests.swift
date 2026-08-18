@@ -455,3 +455,52 @@ final class ManagedAutoModeTests: XCTestCase {
         XCTAssertTrue(named.contains("ANTHROPIC_BASE_URL"))
     }
 }
+
+/// Turning auto mode off overrides a deliberate `--permission-mode auto` silently — Claude
+/// Code documents that `disableAutoMode` downgrades such a session to `default`. Silence
+/// about an overridden choice is the failure shape this repo keeps rediscovering, so the
+/// launch names it. Detection has to be exact: this flag belongs to Claude Code, not oMLX,
+/// so `ProbeTarget.value` cannot do it — that scanner resolves tokens against `omlxOptions`
+/// and would return nil for this flag forever.
+final class DeliberateAutoModeDetectionTests: XCTestCase {
+
+    private func requested(_ args: [String]) -> Bool {
+        LaunchSettings.deliberateAutoModeRequested(arguments: args)
+    }
+
+    func testSpaceAndEqualsFormsAreBothSeen() {
+        XCTAssertTrue(requested(["--permission-mode", "auto"]))
+        XCTAssertTrue(requested(["--permission-mode=auto"]))
+    }
+
+    func testOtherModesAreNotMistakenForIt() {
+        // A naive contains("auto") passes none of these.
+        XCTAssertFalse(requested(["--permission-mode", "default"]))
+        XCTAssertFalse(requested(["--permission-mode", "acceptEdits"]))
+        XCTAssertFalse(requested(["--permission-mode=plan"]))
+        XCTAssertFalse(requested([]))
+    }
+
+    func testBareWordIsNotAFlag() {
+        XCTAssertFalse(requested(["auto"]))
+        XCTAssertFalse(requested(["-p", "explain auto mode to me"]))
+    }
+
+    func testNothingPastTheDoubleDashIsRead() {
+        // Same rule ProbeTarget applies, for the same reason: past `--` the tokens are not
+        // flags, and reading one would report a choice the operator did not make.
+        XCTAssertFalse(requested(["--", "--permission-mode", "auto"]))
+    }
+
+    func testLastOccurrenceWins() {
+        XCTAssertFalse(requested(["--permission-mode", "auto", "--permission-mode", "default"]))
+        XCTAssertTrue(requested(["--permission-mode", "default", "--permission-mode", "auto"]))
+    }
+
+    func testLongerFlagNamesAreNotPrefixMatched() {
+        // oMLX's argparse accepts unambiguous prefixes; Claude Code's parser does not, and
+        // guessing on its behalf would report a flag the operator never passed.
+        XCTAssertFalse(requested(["--permission-modes", "auto"]))
+        XCTAssertFalse(requested(["--permission", "auto"]))
+    }
+}
