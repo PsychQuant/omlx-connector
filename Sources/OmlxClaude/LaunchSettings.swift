@@ -113,6 +113,18 @@ enum LaunchSettings {
         return reportableKeys(authToken: authToken).filter { env[$0] != nil }.sorted()
     }
 
+    /// Whether the operator has explicitly asked for auto mode back.
+    ///
+    /// Accepts **only** the literal `1`, the same rule `LoopbackPolicy.allowsRemote` applies,
+    /// for a related reason: a lenient parse silently restores the mode this launch exists to
+    /// turn off, and the consequence shows up as the local model acting unreviewed rather
+    /// than as an error anyone can trace back to a stray `true`.
+    static func autoModeOptIn(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        environment["OMLX_ALLOW_AUTO_MODE"] == "1"
+    }
+
     /// The `--settings` JSON value. Claude Code accepts a literal JSON string here, so
     /// nothing is written to disk and the user's own config is never touched.
     static func settingsJSON(baseURL: String, authToken: ProbeTarget.AuthToken) throws

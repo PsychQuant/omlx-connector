@@ -357,3 +357,23 @@ final class LaunchSettingsTests: XCTestCase {
                 .isEmpty)
     }
 }
+
+/// Auto mode is Claude Code's built-in starting mode on Pro/Max/Team, and it hands
+/// oversight to a classifier rather than to the operator. That premise assumes the acting
+/// model is a hosted one; this command replaces it with a local one, so the launch turns
+/// auto mode off. Issue #11.
+final class AutoModeOptInTests: XCTestCase {
+
+    func testOptInAcceptsOnlyLiteralOne() {
+        // Same rule as OMLX_ALLOW_REMOTE, for the same reason: a lenient parse here
+        // silently restores the mode the whole change exists to disable. The near-misses
+        // are the point — a `!= nil` or a truthy parse passes none of them.
+        for spelling in ["true", "TRUE", "yes", "on", "01", " 1", "1 ", "0", "", "disable"] {
+            XCTAssertFalse(
+                LaunchSettings.autoModeOptIn(environment: ["OMLX_ALLOW_AUTO_MODE": spelling]),
+                "\(String(reflecting: spelling)) must not count as opting in")
+        }
+        XCTAssertTrue(LaunchSettings.autoModeOptIn(environment: ["OMLX_ALLOW_AUTO_MODE": "1"]))
+        XCTAssertFalse(LaunchSettings.autoModeOptIn(environment: [:]))
+    }
+}
