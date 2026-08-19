@@ -1,4 +1,5 @@
 import Foundation
+import OmlxConnectorCore
 import MCP
 
 /// Shared preamble. Local models are chattier than frontier models about what they
@@ -19,7 +20,7 @@ final class OmlxConnectorServer {
         self.tools = Self.defineTools()
 
         server = Server(
-            name: AppVersion.mcpServerName,
+            name: MCPIdentity.mcpServerName,
             version: AppVersion.current,
             capabilities: .init(tools: .init())
         )

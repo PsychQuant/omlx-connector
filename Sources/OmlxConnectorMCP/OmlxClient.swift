@@ -1,4 +1,5 @@
 import Foundation
+import OmlxConnectorCore
 
 // MARK: - Configuration
 
@@ -19,20 +20,19 @@ enum OmlxConfig {
         guard let url = URL(string: raw), let host = url.host else {
             throw OmlxError.invalidConfiguration("OMLX_BASE_URL is not a valid URL: \(raw)")
         }
-        let allowRemote = environment["OMLX_ALLOW_REMOTE"] == "1"
+        let allowRemote = LoopbackPolicy.allowsRemote(environment: environment)
         if !isLoopback(host) && !allowRemote {
             throw OmlxError.nonLoopbackRefused(host: host)
         }
         return url
     }
 
-    /// `127.0.0.1` is preferred over `localhost` in the default because the latter
-    /// can resolve to `::1` first, which a server bound only to IPv4 will refuse.
-    static func isLoopback(_ host: String) -> Bool {
-        let normalized = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
-        if normalized == "localhost" || normalized == "::1" { return true }
-        return normalized.hasPrefix("127.")
-    }
+    /// Forwards to `LoopbackPolicy`, which both entry points share.
+    ///
+    /// The implementation moved to `OmlxConnectorCore` when `omlx-claude` turned out to
+    /// have shipped without any loopback check at all. This name is kept because it is
+    /// the vocabulary the rest of this file and its tests use.
+    static func isLoopback(_ host: String) -> Bool { LoopbackPolicy.isLoopback(host) }
 
     static func resolveTimeout(
         environment: [String: String] = ProcessInfo.processInfo.environment

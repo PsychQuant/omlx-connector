@@ -4,7 +4,7 @@ BINARY_NAME := OmlxConnectorMCP
 # language mode only if an upstream dependency trips strict concurrency.
 FALLBACK_FLAGS := $(shell swift build 2>&1 | grep -q "SendingRisksDataRace" && echo "-Xswiftc -swift-version -Xswiftc 5")
 
-.PHONY: build release release-signed verify-developer-id install install-signed clean test ping
+.PHONY: build release release-signed verify-developer-id install install-omlx-claude install-signed clean test test-swift test-shell ping
 
 build:
 	swift build $(FALLBACK_FLAGS)
@@ -12,8 +12,17 @@ build:
 release:
 	swift build -c release $(FALLBACK_FLAGS)
 
-test:
+## Swift tests plus the shell suites. The shell ones are not optional extras: the
+## download verification and the "no unverified downloads anywhere in plugin/" property
+## are only expressible there, and both exist because a defect survived a review round
+## by being fixed in one file.
+test: test-swift test-shell
+
+test-swift:
 	swift test $(FALLBACK_FLAGS)
+
+test-shell:
+	@for suite in scripts/tests/*.test.sh; do bash "$$suite" || exit 1; done
 
 ## Reachability check against the configured oMLX server.
 ping: build
@@ -22,9 +31,13 @@ ping: build
 verify-developer-id:
 	@: $${DEVELOPER_ID:?DEVELOPER_ID not set. See README 'Signing & notarization'.}
 
+## The only documented release command. It pointed at scripts/build-mcpb.sh, which has
+## never existed in this repo — `make release-signed` failed with exit 127 for anyone
+## who followed the README. It went unnoticed because the script was always invoked
+## directly during development.
 release-signed: verify-developer-id
 	@: $${NOTARY_PROFILE:?NOTARY_PROFILE not set. See README 'Signing & notarization'.}
-	REQUIRE_CODESIGN=1 ./scripts/build-mcpb.sh
+	./scripts/build-release.sh
 
 ## Local install, ad-hoc signed. Fine for development on this machine only.
 install: release
@@ -34,6 +47,21 @@ install: release
 	chmod +x ~/bin/$(BINARY_NAME)
 	codesign --force --sign - ~/bin/$(BINARY_NAME)
 	@echo "installed ~/bin/$(BINARY_NAME)"
+
+## Local install of the usage-1 command, ad-hoc signed. Development only —
+## end users get it from the plugin's session-start hook, which downloads the
+## notarized build from the release.
+install-omlx-claude: release
+	@mkdir -p ~/bin
+	rm -f ~/bin/omlx-claude
+	cp .build/release/omlx-claude ~/bin/omlx-claude
+	chmod +x ~/bin/omlx-claude
+	codesign --force --sign - ~/bin/omlx-claude
+	@~/bin/omlx-claude --version | awk '{print $$NF}' > ~/bin/.omlx-claude.version
+	@echo "installed ~/bin/omlx-claude"
+	@case ":$$PATH:" in *":$$HOME/bin:"*) ;; \
+	  *) echo "warning: ~/bin is not on your PATH — typing 'omlx-claude' will not find it" ;; \
+	esac
 
 ## Local install with the real Developer ID.
 install-signed: verify-developer-id release

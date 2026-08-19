@@ -1,22 +1,26 @@
 # omlx-connector
 
-Delegates text work to a model running on this machine via
-[oMLX](https://github.com/jundot/omlx). Five tools: `local_summarize`,
-`local_rewrite`, `local_classify`, `local_complete`, `local_models`.
+Connects [oMLX](https://github.com/jundot/omlx) to Claude Code. Installing this
+plugin delivers **both** entry points:
+
+- Five MCP tools — `local_summarize`, `local_rewrite`, `local_classify`,
+  `local_complete`, `local_models` — for delegating work while Claude answers.
+- The `omlx-claude` command, installed onto `~/bin` by a session-start hook, for
+  running Claude Code itself on a local model.
 
 For **when** to delegate, see the `local-delegation` skill — it carries the test
 (whose words are these?) and the cost model. This file covers what the skill
 assumes: the architecture, and the limits that decide whether delegation is even
 possible.
 
-## Two arrangements, and this plugin is one of them
+## Two arrangements, both shipped here
 
 Users combining a local model with Claude Code have two options, and they are
 frequently confused for each other. The axis is **who answers the user**.
 
-| | **Usage 1** | **Usage 2 — this plugin** |
+| | **Usage 1** | **Usage 2** |
 |---|---|---|
-| Started by | `omlx launch claude` | installing this plugin |
+| Started by | typing `omlx-claude` | the five tools below |
 | Who answers | the local model | Claude |
 | The local model is | the agent itself | a tool Claude calls |
 | Claude present | no | yes |
@@ -25,6 +29,10 @@ frequently confused for each other. The axis is **who answers the user**.
 When a user asks "what can the local model do", establish which arrangement they
 mean before answering. Capability measured under usage 1 does not transfer: usage 1
 requires the local model to plan its own tool use, usage 2 does not.
+
+**`omlx-claude` is not available to Claude Desktop users.** The `.mcpb` bundle ships
+the MCP server alone, because Desktop has no terminal. If someone installed that way
+and cannot find the command, nothing is broken — point them at the release assets.
 
 ## Hard limits, not gradual degradation
 
