@@ -22,7 +22,18 @@ test-swift:
 	swift test $(FALLBACK_FLAGS)
 
 test-shell:
+	@# NON-RECURSIVE on purpose: scripts/tests/headed/ holds suites that need a live
+	@# oMLX server and a PTY. Making this glob recursive would pull them into the
+	@# hermetic `make test`. See scripts/tests/headed/model-picker.test.sh (#17).
 	@for suite in scripts/tests/*.test.sh; do bash "$$suite" || exit 1; done
+
+## Headed tests: drive the interactive path through a real PTY (tmux).
+## Deliberately NOT part of `test` — these need a live oMLX server, so folding them in
+## would trade a fast always-runnable suite for an environment-dependent one. Same layer
+## as the hand-checks CLAUDE.md already asks for, but repeatable.
+## Set REQUIRE_FULL_SUITE=1 to make a skip (missing tmux / no server) a failure.
+test-headed:
+	@for suite in scripts/tests/headed/*.test.sh; do bash "$$suite" || exit 1; done
 
 ## Reachability check against the configured oMLX server.
 ping: build

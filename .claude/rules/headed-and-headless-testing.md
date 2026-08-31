@@ -86,10 +86,12 @@ shasum -a 256 ~/.claude/settings.json ~/.claude.json    # before, and again afte
 
 ## Where headed tests run
 
-`make test-headed`, a target of its own. **It does not exist yet** — creating it is the
-implementation of issue #17, of which this rule is the specification half.
+`make test-headed`, a target of its own. The suites live in `scripts/tests/headed/`.
 
-**Not** in `make test`. That suite is deliberately hermetic — no network, no oMLX required —
+**Not** in `make test`. The separation is structural rather than disciplinary: `test-shell`
+globs `scripts/tests/*.test.sh`, which is **not recursive**, so a suite in the subdirectory
+cannot join the hermetic run by accident. Nobody has to remember a flag. Making that glob
+recursive would silently undo it, which is why the Makefile carries a comment saying so. That suite is deliberately hermetic — no network, no oMLX required —
 and a headed test needs a live server. Folding one into the other would trade a fast, always-
 runnable suite for a slow, environment-dependent one, and the hermetic property is worth more
 than the convenience of a single command.
