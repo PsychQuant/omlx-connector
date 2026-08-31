@@ -136,6 +136,37 @@ argument — see issue #8.
 Both were read against 0.6.4. They are the kind of thing a bump is supposed to re-check,
 so re-read them when moving the baseline rather than assuming they held.
 
+## Finding the commits for an issue needs a boundary, not `#N`
+
+`git log --grep="#N"` is wrong in this repository, and the reason is **local numbering**, not
+oMLX. Measured, not asserted:
+
+```
+$ git log --oneline --grep='#1'              | wc -l   # 12
+$ git log --oneline --grep='#1\([^0-9]\|$\)' | wc -l   #  0
+```
+
+**All twelve are false positives**, matched through this repo's own `#10`, `#11`, `#12`, `#13`,
+`#16`, `#17`, `#18`. Upstream's four-digit ids (`#2715`, `#2716`) add two more on `#2`, but they
+are the smaller half — the repo started colliding with itself the moment it reached two digits.
+An upstream-only framing invites "this commit doesn't cite oMLX, so a bare grep is safe", and
+`#1`'s twelve all come from commits that do not.
+
+Use the boundary form:
+
+```bash
+git log --oneline --grep="#N\([^0-9]\|$\)"
+```
+
+**This has live consumers.** `idd-close` Step 1 asks "are there commits referencing this issue"
+with the bare pattern, and its Step 1.6 semantic gate re-uses it to check that a `- [x]` bullet
+has backing commits — so for `#1` it reports twelve unrelated commits and would call the evidence
+sound. `idd-list`'s PR-ref scan is the same defect in another consumer: PR #7's cluster computes
+as `#2 #6 #2715 #2716`, pulling upstream numbers in as local issues.
+
+Writing this down does not fix those tools; they live in the IDD plugin. It means whoever reads
+their output has a chance of recognising the number is wrong. Tracked in issue #5.
+
 ## Version consistency is enforced, and for a reason
 
 `Sources/OmlxConnectorCore/Version.swift` is the single source of truth, shared by
