@@ -103,6 +103,30 @@ remembering this mechanism exists to remove.
 **Bump it only after re-reading `integrations/claude.py` and `cli.py` in the
 installed oMLX**, not merely after confirming a launch still works.
 
+### What the environment does across the exec, read at 0.6.4
+
+Two facts about `omlx launch claude` that the re-read establishes, both load-bearing and
+neither obvious from this side of the exec. They belong here rather than in a commit
+message because designs keep being proposed that depend on one or the other.
+
+**The inherited environment survives.** `Integration._scrubbed_env` in
+`integrations/base.py` is `os.environ.copy()` with exactly three keys removed —
+`PYTHONHOME`, `PYTHONPATH`, `PYTHONDONTWRITEBYTECODE` — because oMLX.app ships its own
+cpython and launched tools would otherwise inherit it and crash. It is not a general
+filter. Anything this command exports before `execvp` reaches Claude Code intact, which
+is what makes an environment-based mechanism viable at all through the chain.
+
+**Except the credential, which oMLX reassigns unconditionally.**
+`integrations/claude.py` sets `env["ANTHROPIC_AUTH_TOKEN"] = ctx.auth_token` every
+launch, so exporting that one key before the exec accomplishes nothing. This is not
+symmetric with the point above and the difference is easy to lose: the environment is a
+usable channel in general and a dead one for this key specifically. It is also the reason
+the credential currently travels in the `--settings` payload, which is a command-line
+argument — see issue #8.
+
+Both were read against 0.6.4. They are the kind of thing a bump is supposed to re-check,
+so re-read them when moving the baseline rather than assuming they held.
+
 ## Version consistency is enforced, and for a reason
 
 `Sources/OmlxConnectorCore/Version.swift` is the single source of truth, shared by
