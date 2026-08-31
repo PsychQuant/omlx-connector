@@ -108,12 +108,22 @@ public enum UpstreamWorkaround {
 
     /// The oMLX release this workaround was last read against, source and all.
     ///
-    /// Verified 2026-08-17 against
+    /// Verified 2026-08-31 against
     /// `/Applications/oMLX.app/Contents/Resources/omlx/integrations/claude.py`
-    /// (env assignment at lines 95-159) and `cli.py` (`parse_known_args`, line
-    /// 1418). Bump this only after re-reading those, not merely after testing that
-    /// a launch still works.
-    public static let lastVerifiedOmlxVersion = "0.6.0rc1"
+    /// (env assignment at lines 95-159) and `cli.py` (the `launch` separator split
+    /// at lines 1446-1455). Bump this only after re-reading those, not merely after
+    /// testing that a launch still works.
+    ///
+    /// 0.6.0rc1 -> 0.6.4 moved nothing that matters here. `integrations/claude.py`
+    /// is byte-identical across those five releases, so #2715 and #2716 are both
+    /// still live and the settings override is still load-bearing — this bump
+    /// records that the ground was checked, not that it shifted. `cli.py` did
+    /// change, in one place `launch` reaches: it now splits the `--` forwarding
+    /// separator itself instead of leaving it to `parse_known_args`. That is
+    /// invisible to address resolution, because neither the old parser nor the new
+    /// one reads a flag after `--` as an oMLX option, which is what
+    /// `ProbeTarget.resolve` already assumes when it stops there.
+    public static let lastVerifiedOmlxVersion = "0.6.4"
 
     /// What the launcher should say about the installed oMLX, if anything.
     public enum Staleness: Equatable {

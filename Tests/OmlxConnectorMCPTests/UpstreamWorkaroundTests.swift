@@ -37,10 +37,17 @@ final class UpstreamWorkaroundStalenessTests: XCTestCase {
         XCTAssertTrue(notice.contains("0.7.2"), "notice should name the installed version")
     }
 
-    func testReleaseOutranksItsOwnReleaseCandidate() {
-        // Baseline is 0.6.0rc1. Plain 0.6.0 is the release that rc1 led up to, so
-        // it is newer and must trigger the notice.
-        XCTAssertNotNil(UpstreamWorkaround.stalenessNotice(installedOmlxVersion: "0.6.0"))
+    func testReleaseCandidateOfTheBaselineIsSilent() {
+        // Baseline is 0.6.4. The release candidates that led up to it are *older*,
+        // so they must stay silent. This is the direction that breaks if the
+        // comparator ever reads a pre-release tag as an increment.
+        XCTAssertNil(UpstreamWorkaround.stalenessNotice(installedOmlxVersion: "0.6.4rc1"))
+    }
+
+    func testReleaseCandidateOfALaterVersionTriggers() {
+        // The other direction, so neither test can pass by refusing everything:
+        // 0.6.5rc1 is past the baseline even though it is not a final release.
+        XCTAssertNotNil(UpstreamWorkaround.stalenessNotice(installedOmlxVersion: "0.6.5rc1"))
     }
 
     func testUnparseableVersionIsSilent() {

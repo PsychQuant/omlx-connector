@@ -44,7 +44,7 @@ enum LaunchSettings {
     /// Keys we re-assert, with values we can compute without knowing which model oMLX
     /// will end up serving.
     ///
-    /// Mirrors `integrations/claude.py` as of oMLX 0.6.0rc1 — see
+    /// Mirrors `integrations/claude.py` as of oMLX 0.6.4 — see
     /// `UpstreamWorkaround.lastVerifiedOmlxVersion`, which is what tells you when this
     /// list is worth re-reading.
     static func overrides(baseURL: String, authToken: ProbeTarget.AuthToken)
