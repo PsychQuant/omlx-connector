@@ -17,3 +17,17 @@ mcpb/*.mcpb.sha256
 # Deliberately narrow: `.claude/.idd/local.json` and `.claude/rules/` are tracked,
 # and both `.claude/` and `.claude/.idd/` would cover them. (#13)
 .claude/.idd/attachments/
+
+# Editor-local VS Code state. `launch.json` is carved back in deliberately: it holds
+# only `${workspaceFolder:...}` and this repo's own build targets — portable, no machine
+# paths, no personal data — and it was already tracked before this rule existed (f1f1a27).
+#
+# The glob is `.vscode/*`, NOT `.vscode/`, and the difference is load-bearing. Excluding the
+# DIRECTORY makes the `!` line inert: git does not enumerate an excluded directory, so
+# patterns for files inside it are never evaluated. Verified in a scratch repo — with
+# `.vscode/` both files are ignored and the carve-out silently does nothing; with `.vscode/*`
+# only settings.json is. Same trap as the `.claude/.idd/` chain discussed in #13.
+#
+# To drop launch.json instead: delete the `!` line and `git rm --cached .vscode/launch.json`. (#4)
+.vscode/*
+!.vscode/launch.json
