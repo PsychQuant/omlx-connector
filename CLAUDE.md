@@ -328,6 +328,11 @@ binary forging `TeamIdentifier` in `codesign` output, and that **no** script und
 What the tests do *not* cover: anything requiring a live oMLX server. Verify those
 by hand with `make ping` and a real tool call before releasing.
 
+**Nor the headed path.** Everything above runs `-p`, which cannot invoke a slash command, a
+picker, or a permission prompt — so the behaviour several open issues are actually about has
+no harness here at all. `.claude/rules/headed-and-headless-testing.md` is the rule for that,
+and issue #17 tracks building the `make test-headed` target it specifies.
+
 **Nor the wiring in `main.swift`**, which execs and so has no unit test. This is worth
 stating rather than leaving implicit, because a mutation exposed it: deleting the two lines
 that act on `LaunchSettings.managedBaseURLVerdict` — the ones that decline to launch into a
