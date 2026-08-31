@@ -328,10 +328,19 @@ binary forging `TeamIdentifier` in `codesign` output, and that **no** script und
 What the tests do *not* cover: anything requiring a live oMLX server. Verify those
 by hand with `make ping` and a real tool call before releasing.
 
-**Nor the headed path.** Everything above runs `-p`, which cannot invoke a slash command, a
-picker, or a permission prompt — so the behaviour several open issues are actually about has
-no harness here at all. `.claude/rules/headed-and-headless-testing.md` is the rule for that,
-and issue #17 tracks building the `make test-headed` target it specifies.
+**The headed path has its own target.** Everything above runs `-p`, which cannot invoke a
+slash command, a picker, or a permission prompt — the behaviour several open issues are
+actually about. `make test-headed` covers it, driving a real PTY through tmux;
+`.claude/rules/headed-and-headless-testing.md` is the rule, and `scripts/tests/headed/` holds
+the suites.
+
+It is **not** part of `make test`, and the separation is structural rather than disciplinary:
+`test-shell` globs `scripts/tests/*.test.sh`, which is not recursive, so a suite in the
+subdirectory cannot join the hermetic run by accident. Making that glob recursive would
+silently undo it and give `make test` a live-server dependency.
+
+Having a runner is not the same as having a trigger — nothing invokes `make test-headed`
+unless a person decides to. Tracked in issue #18.
 
 **Nor the wiring in `main.swift`**, which execs and so has no unit test. This is worth
 stating rather than leaving implicit, because a mutation exposed it: deleting the two lines
