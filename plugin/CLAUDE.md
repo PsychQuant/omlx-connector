@@ -45,6 +45,14 @@ native window of 40,960 and cannot be used at all. Check `max_context_window` vi
 This limit applies to usage 1. Usage 2 (these tools) has no such floor, since
 Claude handles the agent loop.
 
+**A model id starting with `claude-` silently loses its declared window.** oMLX's own
+source marks this as confirmed live: `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is ignored for ids
+that canonicalize to `claude-*`, and Claude Code uses its built-in window instead. The
+auto-compact denominator keeps the declared value, so the two disagree with no error and
+no warning. Unlike the 48K floor — which refuses outright and is therefore self-reporting
+— this one is silent, which is why it needs writing down. Do not recommend or name a
+model `claude-…`.
+
 ## Costs the user will feel
 
 **Cold start.** A model not already in memory must load first — roughly 17 seconds

@@ -88,6 +88,15 @@ README, help text and source comments all calling it the #2716 workaround, while
 end-to-end run that would have disproved it had already been done — the warning was in
 the output and went unread. The mechanism was harmless; the claim was the defect.
 
+**A third caveat, and it is the quiet one.** oMLX's `integrations/claude.py` marks it
+confirmed live in its own source: `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is ignored for model ids
+that canonicalize to `claude-*`, because Claude Code trusts its built-in window for those.
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` still carries the advertised value, so the reported window
+and the auto-compact denominator drift apart. The 48K floor announces itself by refusing to
+launch; this one produces no error and no warning at all, which is exactly why it belongs in
+the docs rather than in someone's memory. Tracked in issue #3; the avoidance is to not name a
+local model `claude-…`.
+
 ### It keeps existing after upstream is fixed, and says so itself
 
 Either issue being fixed does not retire this command — it also carries distribution,

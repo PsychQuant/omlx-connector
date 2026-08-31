@@ -254,6 +254,14 @@ smaller ones outright, which rules out some otherwise capable models (`Qwen3-32B
 40,960 and cannot be used). Run `local_models`, or check `max_context_window` at
 `/v1/models/status`, before picking.
 
+**Do not name a local model `claude-…`.** oMLX passes the advertised window through
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and oMLX's own source marks the exception as confirmed
+live: that variable is *ignored* for model ids which canonicalize to `claude-*`, because
+Claude Code trusts its built-in window for those instead. The auto-compact denominator
+(`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) still carries the advertised value, so the two scales
+stop agreeing — and nothing reports it. The avoidance is entirely in your hands: pick a
+model id that does not begin with `claude-`.
+
 ## Tools
 
 | Tool | Purpose |
