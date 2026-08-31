@@ -365,8 +365,20 @@ they assert cannot be expressed in the Swift suite: that `verify-download.sh` re
 binary forging `TeamIdentifier` in `codesign` output, and that **no** script under
 `plugin/` downloads or execs without going through the shared fetcher.
 
-What the tests do *not* cover: anything requiring a live oMLX server. Verify those
-by hand with `make ping` and a real tool call before releasing.
+What the tests do *not* cover: anything requiring a live oMLX server. Before releasing,
+run the three that need one, in this order:
+
+```bash
+make ping           # the server answers and the MCP side sees its models
+make test-headed    # the interactive path, driven through a PTY
+# then one real tool call by hand
+```
+
+This is a human checklist and is named as one — nothing invokes it. `make test-headed` in
+particular is opt-in by construction, which is the whole of issue #18: giving the headed rule
+a runner did not give it a trigger, and this line is the trigger, such as it is. It belongs
+here rather than in `make release-signed` because a signing run should not fail for want of a
+local server.
 
 **The headed path has its own target.** Everything above runs `-p`, which cannot invoke a
 slash command, a picker, or a permission prompt — the behaviour several open issues are
@@ -379,8 +391,10 @@ It is **not** part of `make test`, and the separation is structural rather than 
 subdirectory cannot join the hermetic run by accident. Making that glob recursive would
 silently undo it and give `make test` a live-server dependency.
 
-Having a runner is not the same as having a trigger — nothing invokes `make test-headed`
-unless a person decides to. Tracked in issue #18.
+Having a runner is not the same as having a trigger. `make test-headed` is reached only by
+the pre-release checklist above, deliberately — a person following it, not automation. Issue #18
+settled that: the alternative was wiring it into `make release-signed`, which would make signing
+fail whenever no oMLX server happened to be up.
 
 **Nor the wiring in `main.swift`**, which execs and so has no unit test. This is worth
 stating rather than leaving implicit, because a mutation exposed it: deleting the two lines
