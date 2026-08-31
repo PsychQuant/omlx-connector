@@ -11,3 +11,9 @@ mcpb/server/*
 !mcpb/server/.gitkeep
 mcpb/*.mcpb
 mcpb/*.mcpb.sha256
+
+# IDD writes an attachments manifest whenever an issue is diagnosed — an empty one
+# when the issue has no attachments — so this directory regenerates on its own.
+# Deliberately narrow: `.claude/.idd/local.json` and `.claude/rules/` are tracked,
+# and both `.claude/` and `.claude/.idd/` would cover them. (#13)
+.claude/.idd/attachments/
