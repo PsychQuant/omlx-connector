@@ -50,6 +50,49 @@ final class UpstreamWorkaroundStalenessTests: XCTestCase {
         XCTAssertNotNil(UpstreamWorkaround.stalenessNotice(installedOmlxVersion: "0.6.5rc1"))
     }
 
+    // `staleness` has three outcomes; `stalenessNotice` reports only one of them. The
+    // test below (`testUnparseableVersionIsSilent`) is correct about the helper and was
+    // the reason this gap stayed invisible: reading it, "unparseable" looks handled. It is
+    // handled for `stalenessNotice` and, until these cases, untested for `staleness`.
+    // Keep both — they assert different functions, and collapsing either loses coverage.
+
+    func testUnreadableWhenVersionIsNil() {
+        // `omlx --version` failing is not the same as "nothing to say". The launcher's
+        // recorded promise is that it never goes quiet about an unchecked baseline.
+        guard case .unreadable(let notice) = UpstreamWorkaround.staleness(installedOmlxVersion: nil)
+        else { return XCTFail("nil version must be .unreadable, not silence") }
+        XCTAssertTrue(notice.contains(UpstreamWorkaround.lastVerifiedOmlxVersion),
+                      "the notice must name the baseline, or it is not actionable")
+    }
+
+    func testUnreadableWhenVersionIsEmpty() {
+        // A separate guard clause from the nil case. Tested separately so deleting the
+        // `!raw.isEmpty` half cannot stay green.
+        guard case .unreadable = UpstreamWorkaround.staleness(installedOmlxVersion: "")
+        else { return XCTFail("empty version must be .unreadable") }
+    }
+
+    func testUnreadableQuotesTheUnparseableStringBack() {
+        // The scenario the doc comment names: `omlx --version` printing `omlx 0.7.0`
+        // instead of `0.7.0`. Quoting the raw string is what makes the notice actionable —
+        // without it the reader cannot tell what the parser choked on.
+        guard case .unreadable(let notice) =
+                UpstreamWorkaround.staleness(installedOmlxVersion: "omlx 0.7.0")
+        else { return XCTFail("unparseable version must be .unreadable, not .quiet") }
+        XCTAssertTrue(notice.contains("omlx 0.7.0"), "notice should quote the raw version back")
+    }
+
+    func testTheTwoUnreadableSitesSayDifferentThings() {
+        // Case-only assertions would be satisfied by either site, so one guard could be
+        // deleted unnoticed. The messages differ; require that.
+        guard case .unreadable(let missing) = UpstreamWorkaround.staleness(installedOmlxVersion: nil),
+              case .unreadable(let unparseable) =
+                UpstreamWorkaround.staleness(installedOmlxVersion: "omlx 0.7.0")
+        else { return XCTFail("both inputs must be .unreadable") }
+        XCTAssertNotEqual(missing, unparseable,
+                          "'could not read' and 'cannot parse' are different situations")
+    }
+
     func testUnparseableVersionIsSilent() {
         // Fail quiet. A version string we cannot read is never a reason to get in
         // the way of launching.
