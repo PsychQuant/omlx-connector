@@ -239,4 +239,30 @@ final class ServedModelIdTests: XCTestCase {
         let decoded = try JSONDecoder().decode(ChatResponse.self, from: json)
         XCTAssertNil(decoded.model)
     }
+
+    /// Round 2 found the *call site* untested: reverting `decoded.model ?? resolvedModel`
+    /// to plain `resolvedModel` left all 133 tests green. The decode was covered; the line
+    /// that uses it was not. That is the `main.swift` shape `CLAUDE.md` already records —
+    /// "the decision function is tested and mutation-proven; its call site is not" — one
+    /// level down, reproduced by the round that cited it.
+    ///
+    /// The fix `CLAUDE.md` prescribes for that shape is to shrink what has to be checked by
+    /// hand rather than only warn about it: move the decision into a testable function and
+    /// leave the call site a call. `OmlxClient.servedModel` is that function.
+    func testServedModelPrefersWhatTheServerReported() {
+        XCTAssertEqual(
+            OmlxClient.servedModel(reported: "mlx-community--Qwen3-4B-Instruct-2507-4bit",
+                                   requested: "qwen3-4b"),
+            "mlx-community--Qwen3-4B-Instruct-2507-4bit")
+    }
+
+    func testServedModelFallsBackToTheRequestedIdWhenTheServerIsSilent() {
+        XCTAssertEqual(OmlxClient.servedModel(reported: nil, requested: "qwen3-4b"), "qwen3-4b")
+    }
+
+    /// An empty string is not a report. Without this, a server echoing `"model": ""` would
+    /// erase the one id the row has.
+    func testServedModelIgnoresAnEmptyReport() {
+        XCTAssertEqual(OmlxClient.servedModel(reported: "", requested: "qwen3-4b"), "qwen3-4b")
+    }
 }

@@ -36,6 +36,14 @@ PASS=0
 FAIL=0
 SKIP=0
 
+# One directory per run, plain filenames inside. The previous form called
+# `mktemp "$TMPDIR/eval-sum-XXXXXX.jsonl"` — and macOS mktemp does NOT substitute when the
+# X's are not the final characters: it creates the LITERAL name, so the path was fixed,
+# shared between concurrent runs and between repos, and a single leftover turned this
+# suite from 89/0 into 82/7. `mktemp -d` has the X's last, so it is genuinely unique.
+SUITE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/eval-checks.XXXXXX")
+trap 'rm -rf "$SUITE_TMP"' EXIT
+
 skip() { echo "  SKIP — $1"; SKIP=$((SKIP + 1)); }
 
 # verdict <description> <expected: ok|not-ok> <check-name> <expect-json> <text>
@@ -185,6 +193,25 @@ verdict "a ?! run is one sentence boundary, not two" ok sentence_count '{"max":2
 verdict "an ellipsis run is one sentence boundary, not three" ok sentence_count '{"max":2}' \
     'Wait... The deadline moved.'
 
+# Kills shrinking _TERMINATORS. No fixture used ？ or ！ as a terminator — in a harness
+# whose Chinese case asks for 繁體中文 output. Reducing ".!?。！？…" to ".!?。" left the
+# suite green while a three-sentence Chinese reply started counting as one.
+verdict "？ terminates a sentence" not-ok sentence_count '{"max":2}' \
+    '這樣可以嗎？我們決定延後！請看附件。'
+verdict "！ and ？ together are three sentences, not one" ok sentence_count '{"max":3}' \
+    '這樣可以嗎？我們決定延後！請看附件。'
+verdict "… terminates a sentence" not-ok sentence_count '{"max":1}' \
+    '他猶豫了…最後還是同意了。'
+
+# Kills stripping the whitespace out of _CLOSERS. A reply ending in a newline is the
+# commonest model output shape there is, and no fixture had one: every tail-rule fixture
+# ended on a bare terminator, a quote, a bracket, `**` or a word.
+verdict "a trailing newline is not a new sentence" ok sentence_count '{"max":2}' \
+    'One. Two.
+'
+verdict "a trailing ideographic space is not a new sentence" ok sentence_count '{"max":1}' \
+    '期限延到四月五日。　'
+
 # --- non_empty: the single most obvious delegation failure ------------------------
 # RED-first: an empty reply scored all-green on every check, in a harness whose stated
 # purpose is to prevent "plausible rows, nothing actually asserted".
@@ -241,6 +268,69 @@ verdict "no_preamble refuses 摘要如下" not-ok no_preamble '{}' \
 verdict "no_preamble sees through markdown emphasis on the opener" not-ok no_preamble '{}' \
     '**Here is a summary:** the deadline moved.'
 
+# --- no_preamble as a CLASS, not a list of instances -------------------------------
+# Round 1 found `當然|当然[，,、:：]` mis-parsing. Round 2 fixed THAT LINE and gave it two
+# fixtures — and left `我(?:已經|會|來|將)` one line below with the identical shape, and
+# `i(?:'ve| have| will| ?'ll)` with it. Both fire on any reply merely beginning in the first
+# person. That is the "fix the property, not the file" section of CLAUDE.md, violated by the
+# round that cited it.
+#
+# So the guard is now a CORPUS, not another instance. Anything that reads as ordinary
+# content must survive every pattern; anything that reads as a lead-in must be caught by
+# some pattern. Adding a pattern means adding to both lists, and a pattern that flags
+# ordinary content fails here no matter which line it was written on.
+corpus() {  # corpus <expected: ok|not-ok> <label> <text...>
+    local want="$1" label="$2"; shift 2
+    local bad=0 t v
+    for t in "$@"; do
+        v=$(printf '%s' "$t" | python3 "$CHECK" --check no_preamble --expect '{}' \
+            | python3 -c 'import json,sys; print("ok" if json.load(sys.stdin)["ok"] else "not-ok")' 2>/dev/null)
+        if [ "$v" != "$want" ]; then
+            [ "$bad" -eq 0 ] && echo "  FAIL — $label"
+            echo "         $t  → $v (wanted $want)"
+            bad=$((bad + 1))
+        fi
+    done
+    if [ "$bad" -eq 0 ]; then echo "  ok   — $label"; PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
+}
+
+corpus ok "no pattern flags ordinary content (false-positive corpus)" \
+    'I will attend the meeting on Tuesday.' \
+    'I have three concerns about the timeline.' \
+    "I'll send the revised figures tomorrow." \
+    '我會在下週提出報告。' \
+    '我將期限延到四月五日。' \
+    '我來自台北，負責這個專案。' \
+    '我已經完成了三項工作。' \
+    '當然可以達成這個目標。' \
+    '好的消息是期限延後了。' \
+    '這是第三次修訂。' \
+    'Below the surface the data disagrees.' \
+    'Three items were deferred: budget, venue, and the vote.' \
+    'The deadline moved to March. Here is the rest of the detail.' \
+    '總結報告會在週五送出。' \
+    'Sure enough, the deadline slipped again.'
+
+corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
+    'Here is a summary of the text: the deadline moved.' \
+    "Here's a summary of the meeting: the deadline moved." \
+    'Below is the summary you asked for.' \
+    'The following is a summary of the discussion.' \
+    'This is a summary of the meeting.' \
+    'Let me summarize: the deadline moved.' \
+    'As requested, the deadline moved to March.' \
+    'Sure, here it is.' \
+    'Certainly! The deadline moved to March.' \
+    'I have summarized the text below.' \
+    'I will summarize the discussion as follows.' \
+    '以下是這段文字的摘要：期限延到三月。' \
+    '這是一份摘要：期限延到四月五日。' \
+    '好的，以下摘要。' \
+    '當然，這是摘要。' \
+    '我已經幫你整理好了。' \
+    '摘要如下：期限延到四月五日。' \
+    '**Here is a summary:** the deadline moved.'
+
 # --- script_purity: both directions, so the set cannot be silently emptied ---------
 # RED-first: 紫 (紫色) and 凰 (鳳凰) are the SAME codepoint in both scripts; 划 (划船,
 # 划算) and 据 (拮据) are legitimate Traditional characters. All four were flagged,
@@ -264,41 +354,98 @@ verdict "script_purity refuses 关于" not-ok script_purity '{"script":"traditio
 verdict "script_purity refuses 应该" not-ok script_purity '{"script":"traditional"}' '应该没有问题。'
 verdict "script_purity refuses 结论" not-ok script_purity '{"script":"traditional"}' '结论如下。'
 
-# --- The invariant as a PROPERTY, not a list of examples ---------------------------
-# The old version stated "characters valid in both scripts are deliberately left out" in
-# a comment and violated it in the data. Big5 is a Traditional-only charset, so "encodes
-# in Big5" is the mechanical form of that sentence. Re-adding 紫 / 凰 / 划 / 据 now fails
-# here instead of reaching a reviewer.
-big5=$(python3 -c '
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-bad = []
-for c in sorted(m._SIMPLIFIED_ONLY):
-    try:
-        c.encode("big5"); bad.append(c)
-    except UnicodeEncodeError:
-        pass
-print("".join(bad))' "$CHECK" 2>/dev/null)
-if [ -z "$big5" ]; then
-    echo "  ok   — no member of _SIMPLIFIED_ONLY encodes in Big5 (property, not a list)"
+# --- script_purity: two corpora, because the question is linguistic, not computable ----
+# Round 2 replaced a prose promise with a Big5 property test, on the theory that Big5 being
+# a Traditional-only charset made "encodes in Big5" the mechanical form of "is valid
+# Traditional". It is not. Big5 also carries rare ARCHAIC variants of characters that are
+# plain Simplified markers in any modern text, so the property removed sixteen real
+# detections along with the four genuine false-positive sources — and then made that
+# irreversible. `什么` began passing silently.
+#
+# Whether a character is Simplified-only is a fact about language. So the guard is two
+# corpora, and the Simplified one is sampled to touch EVERY line of the set: round 2 found
+# that eight of ten lines could be deleted individually with the suite still green, because
+# a table's power was pinned only by whichever characters happened to appear in a fixture.
+scorpus() {  # scorpus <expected: ok|not-ok> <label> <text...>
+    local want="$1" label="$2"; shift 2
+    local bad=0 t v
+    for t in "$@"; do
+        v=$(printf '%s' "$t" | python3 "$CHECK" --check script_purity --expect '{"script":"traditional"}' \
+            | python3 -c 'import json,sys; print("ok" if json.load(sys.stdin)["ok"] else "not-ok")' 2>/dev/null)
+        if [ "$v" != "$want" ]; then
+            [ "$bad" -eq 0 ] && echo "  FAIL — $label"
+            echo "         $t  → $v (wanted $want)"
+            bad=$((bad + 1))
+        fi
+    done
+    if [ "$bad" -eq 0 ]; then echo "  ok   — $label"; PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
+}
+
+# Clean Traditional. Includes the four characters round 1 wrongly flagged, so that
+# regression cannot come back.
+scorpus ok "clean Traditional is never flagged" \
+    '會議紀錄用紫色標記三項待決事項。' \
+    '這個專案的代號是鳳凰計畫。' \
+    '他覺得這樣做並不划算，所以否決了。' \
+    '那一年經費拮据。' \
+    '團隊同意把投稿期限延到四月五日。' \
+    '第二位研究助理的經費核准了六成。' \
+    '兩位成員反對取消控制組，決定延到下週再議。' \
+    '網路連線在九點十四分中斷。' \
+    '這份報告的結論需要重新檢視。' \
+    '他們對這個問題的看法並不一致。' \
+    'The deadline moved to 5 April.'
+
+# Simplified words. These exercise realistic input, but they do NOT pin the table: each
+# sentence carries characters from several lines, so deleting one line leaves another
+# character to flag the same sentence. Six of nine lines survived deletion when this was
+# the only coverage — measured, not assumed. The per-character probe below is what
+# actually pins it.
+scorpus not-ok "Simplified is caught, with every line of the set represented" \
+    '这个决定很重要。'     '结论如下。'         '庄园的门口。' \
+    '应该没有问题。'       '货币政策改变了。'   '软件已经更新。' \
+    '门口有人在等。'       '问题出在时间。'     '龙头企业。' \
+    '他听到了什么？'       '网络连接失败。'     '情况很复杂。' \
+    '我们发现了问题。'     '关于这个决定。'     '他说得很清楚。' \
+    '时间不够了。'         '这个功能已经实现。' '圣人也会犯错。' \
+    '东西坏了。'           '宁静的下午。'       '他怀疑这个结论。'
+
+
+# PER-CHARACTER probes: one from every line of _SIMPLIFIED_ONLY, tested ALONE so that each
+# is the sole possible offender. Delete a line and its probe goes green — the mutation the
+# word-level corpus above could not see.
+probes="这结医应货软门风龙"
+bad=""
+i=0
+while [ $i -lt ${#probes} ]; do
+    ch=$(printf '%s' "$probes" | cut -c $((i+1)))
+    v=$(printf '%s' "$ch" | python3 "$CHECK" --check script_purity --expect '{"script":"traditional"}' \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["ok"])' 2>/dev/null)
+    [ "$v" = "False" ] || bad="$bad$ch"
+    i=$((i + 1))
+done
+if [ -z "$bad" ]; then
+    echo "  ok   — every per-line probe character is detected (${#probes} lines covered)"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL — these members of _SIMPLIFIED_ONLY are valid Traditional (Big5): $big5"
+    echo "  FAIL — these probe characters are no longer detected: $bad"
     FAIL=$((FAIL + 1))
 fi
-# The set must also stay non-trivial. Without this, emptying it satisfies the property
-# above — the "check that refuses nothing" dual of the trap CLAUDE.md records.
-size=$(python3 -c '
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
-m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-print(len(m._SIMPLIFIED_ONLY))' "$CHECK" 2>/dev/null)
-if [ "${size:-0}" -ge 300 ]; then
-    echo "  ok   — _SIMPLIFIED_ONLY still holds $size characters (cannot be silently emptied)"
+
+# ...and the probe list must keep covering every line, or the guard above weakens silently
+# as the table is re-wrapped. This pairs the corpus to the table instead of trusting that
+# they stayed in sync — the sync is exactly what broke while writing this round.
+uncovered=$(python3 -c '
+import re, sys
+src = open(sys.argv[1], encoding="utf-8").read()
+lines = re.findall(r"\"([^\"]*)\"", re.search(r"_SIMPLIFIED_ONLY = set\(\n((?:.*\n)*?)\)\n", src).group(1))
+probes = set(sys.argv[2])
+print(",".join(str(i) for i, L in enumerate(lines) if not (set(L) & probes)))' "$CHECK" "$probes" 2>/dev/null)
+if [ -z "$uncovered" ]; then
+    echo "  ok   — every line of _SIMPLIFIED_ONLY has a probe (deleting any line goes red)"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL — _SIMPLIFIED_ONLY shrank to ${size:-?} characters"
+    echo "  FAIL — lines with no probe character: $uncovered (deleting them would be invisible)"
     FAIL=$((FAIL + 1))
 fi
 
@@ -309,6 +456,22 @@ verdict "category_member tolerates square brackets" ok category_member \
     '{"categories":["bug","feature","question"]}' '[feature]'
 verdict "category_member tolerates markdown bold" ok category_member \
     '{"categories":["bug","feature","question"]}' '**feature**'
+
+# --- label_is: the labelled set that was there all along ---------------------------
+# Round 2: `classify.json` and README both said automating label accuracy "needs a labelled
+# set this repo does not have" — two lines above `"Correctness: the answer should be
+# `bug`."` The labels existed; they were written as PROSE in human_review instead of as
+# data in `expect`. On the live rows the 0.6B answered `feature request` where that case's
+# own gold is `bug`, and the row read mechanical_ok: true.
+#
+# (The round-2 finding also said no check can see gold data because check.py's contract is
+# text-in/verdict-out. That part is wrong — `expect` is exactly that channel, and it was
+# always passed to every check. The defect was real; its stated mechanism was not.)
+verdict "label_is accepts the gold label"            ok     label_is '{"expected":"bug"}' 'bug'
+verdict "label_is refuses a different label"         not-ok label_is '{"expected":"bug"}' 'feature request'
+verdict "label_is is case- and punctuation-tolerant" ok     label_is '{"expected":"bug"}' '「Bug」'
+verdict "label_is refuses a sentence containing it"  not-ok label_is '{"expected":"bug"}' 'I would say this is a bug.'
+guard_late() { :; }
 
 # --- guards must actually guard. Kills deletion of the three raise ValueError. -----
 guard() {  # guard <description> <check> <expect-json>
@@ -397,14 +560,13 @@ row "an explicit null text is not silently checked as empty" false \
 # RED-first: `if not spec: return [], True`. A case with no expectations produced
 # checks: [] and a green row — the harness reporting without checking, in its own code.
 # non_empty now runs on every case regardless of `expect`, so nothing is vacuously green.
-ECASE=$(mktemp "${TMPDIR:-/tmp}/eval-emptyexpect-XXXXXX.json")
+ECASE="$SUITE_TMP/empty-expect.json"
 cat > "$ECASE" <<'JSON'
 {"cases":[{"id":"no-expectations","tool":"local_summarize","arguments":{"text":"x"},"expect":{}}]}
 JSON
 got=$(printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"model\":\"m\",\"text\":\"   \"}"}]}}' \
       | python3 "$RPC" score --case-file "$ECASE" --index 0 --model-requested "" --check "$CHECK" \
       | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["checks"]), d["mechanical_ok"])' 2>/dev/null)
-rm -f "$ECASE"
 if [ "$got" = "1 False" ]; then
     echo "  ok   — a case with an empty expect still runs non_empty (nothing is vacuously green)"
     PASS=$((PASS + 1))
@@ -417,7 +579,7 @@ fi
 # empty string, which is never in the candidate list, so it would have refused EVERY
 # reply: "a check that refuses everything", reproduced one level down in the one check
 # with no positive case to catch it.
-CCASE=$(mktemp "${TMPDIR:-/tmp}/eval-classify-XXXXXX.json")
+CCASE="$SUITE_TMP/classify.json"
 cat > "$CCASE" <<'JSON'
 {"cases":[{"id":"classify-shape","tool":"local_classify",
   "arguments":{"text":"x","categories":["positive","negative"]},
@@ -437,7 +599,6 @@ fi
 unm=$(printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"task\":\"classify\",\"category\":null,\"matched\":false,\"raw_response\":\"I am not sure about this one.\",\"model\":\"m\"}"}]}}' \
       | python3 "$RPC" score --case-file "$CCASE" --index 0 --model-requested "" --check "$CHECK" \
       | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["mechanical_ok"], d.get("matched"))' 2>/dev/null)
-rm -f "$CCASE"
 if [ "$unm" = "False False" ]; then
     echo "  ok   — an unmatched classify reply is not green, and matched=false reaches the row"
     PASS=$((PASS + 1))
@@ -505,6 +666,38 @@ else
     FAIL=$((FAIL + 1))
 fi
 
+# --- expect_row: assertions about the ROW, not the reply text ---------------------
+# Round 2, requirement 6b: `classify-none-of-the-above` exists to test "whether matched:
+# false fires when it should", and its only mechanical check was `category_member` — whose
+# verdict points BACKWARDS there. The desired outcome (no label named, so matched comes
+# back false) FAILS category_member and prints FLAG; the undesired outcome (forcing a
+# label onto content that fits neither) PASSES. The one mechanical signal attached to the
+# requirement was inverted.
+#
+# `matched` is a row field, not reply text, so no text check can express it. expect_row is
+# the channel: rpc.py compares named payload fields after scoring.
+ROWCASE="$SUITE_TMP/expect-row.json"
+cat > "$ROWCASE" <<'JSON'
+{"cases":[{"id":"row-expect","tool":"local_classify",
+  "arguments":{"text":"x","categories":["bug","feature request"]},
+  "expect_row":{"matched":false}}]}
+JSON
+rowcheck() {  # rowcheck <description> <expected mechanical_ok> <payload-json>
+    local desc="$1" want="$2" payload="$3" got
+    got=$(printf '{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":%s}]}}' \
+            "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$payload")" \
+          | python3 "$RPC" score --case-file "$ROWCASE" --index 0 --model-requested "" --check "$CHECK" \
+          | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["mechanical_ok"]))' 2>/dev/null)
+    if [ "$got" = "$want" ]; then echo "  ok   — $desc"; PASS=$((PASS + 1))
+    else echo "  FAIL — $desc (mechanical_ok=$got, wanted $want)"; FAIL=$((FAIL + 1)); fi
+}
+# The DESIRED outcome for out-of-domain content: no label forced, matched false.
+rowcheck "an unmatched reply satisfies expect_row {matched:false}" true \
+    '{"task":"classify","category":null,"matched":false,"raw_response":"none of these apply"}'
+# The UNDESIRED outcome: a label forced onto content that fits neither. It must NOT be green.
+rowcheck "a forced label violates expect_row {matched:false}" false \
+    '{"task":"classify","category":"bug","matched":true,"raw_response":"bug"}'
+
 # --- rpc.py summarize: the guard that failed, made testable -----------------------
 # The guard used to be inline bash counting rows APPENDED, with the comment "a green eval
 # that ran no cases is the reporting-without-checking failure in its purest form". A
@@ -513,14 +706,26 @@ fi
 # state it was written to detect, reproduced against the real binary.
 #
 # It now lives here as a pure function of the output file, so it can be tested at all.
-sumjson() {  # sumjson <description> <expected exit> <expected measured> <jsonl body>
+sumjson() {  # THE EXIT-CODE CONTRACT (settled this round; round 2 found the old split indefensible).
+#
+#   0  the run happened and every mechanical check passed
+#   2  the run happened and there are findings — a model did badly, which is DATA
+#   1  the run did not happen: nothing measured, or a tool/transport/malformed failure
+#
+# Round 2's objection was that a tool error exited 1 while a model returning an empty
+# string exited 0 — "the difference is which layer the emptiness happened at, not what it
+# means". Three codes make the axis the right one: 1 says the measurement failed, 2 says
+# the measurement succeeded and the answer was poor. `make eval` no longer reports success
+# for a run in which every check failed, and does not fail merely because a model is
+# imperfect, which it always is.
+#
+# sumjson <description> <expected exit> <expected measured> <jsonl body>
     local desc="$1" want_rc="$2" want_measured="$3" body="$4"
     local f out rc measured
-    f=$(mktemp "${TMPDIR:-/tmp}/eval-sum-XXXXXX.jsonl")
+    f="$SUITE_TMP/sum-$$-$RANDOM.jsonl"
     printf '%s' "$body" > "$f"
     out=$(python3 "$RPC" summarize --out "$f" 2>&1); rc=$?
     measured=$(printf '%s' "$out" | sed -nE 's/.*measured=([0-9]+).*/\1/p' | head -1)
-    rm -f "$f"
     if [ "$rc" = "$want_rc" ] && [ "${measured:-x}" = "$want_measured" ]; then
         echo "  ok   — $desc"; PASS=$((PASS + 1))
     else
@@ -534,9 +739,22 @@ sumjson "all-errors run exits non-zero and reports measured=0" 1 0 \
 {"case":"b","error":"Error: down","mechanical_ok":null,"checks":[]}
 '
 sumjson "an empty output file exits non-zero" 1 0 ''
-sumjson "two measured replies exit zero" 0 2 \
+# This fixture is why the exit-code contract had to be written down. It previously
+# asserted rc=0 for a run whose second row is an empty reply — round 1 reported that as a
+# MEDIUM, and round 2 did not fix it, it PINNED it here as intended behaviour, directly
+# under a comment about how "fix the code until the test passes" is the reflex this repo
+# keeps punishing. Two clean rows exit 0; a run with findings exits 2.
+sumjson "two clean replies exit zero" 0 2 \
+'{"case":"a","error":null,"mechanical_ok":true,"checks":[{"check":"non_empty","ok":true}],"human_review":["x"]}
+{"case":"b","error":null,"mechanical_ok":true,"checks":[{"check":"non_empty","ok":true}],"human_review":["y"]}
+'
+sumjson "a run where a check failed exits 2, not 0" 2 2 \
 '{"case":"a","error":null,"mechanical_ok":true,"checks":[{"check":"non_empty","ok":true}],"human_review":["x"]}
 {"case":"b","error":null,"mechanical_ok":false,"checks":[{"check":"non_empty","ok":false}],"human_review":["y"]}
+'
+sumjson "a run where EVERY reply was empty exits 2, never 0" 2 2 \
+'{"case":"a","error":null,"mechanical_ok":false,"checks":[{"check":"non_empty","ok":false}],"human_review":[]}
+{"case":"b","error":null,"mechanical_ok":false,"checks":[{"check":"non_empty","ok":false}],"human_review":[]}
 '
 # Measured and errored must be reported separately: "N rows, 0 errors" could not tell a
 # run of N real replies from a run of N recorded failures. A partial run is also not a
@@ -544,7 +762,7 @@ sumjson "two measured replies exit zero" 0 2 \
 # (This expectation was wrong on first writing: it asserted rc=0. The implementation was
 # right and the test was not, so the test moved. Recorded because "fix the code until the
 # test passes" is the reflex this repo's history keeps punishing.)
-sumjson "a mixed run counts measured separately and is not green" 1 1 \
+sumjson "a run with a recorded tool error exits 1 — the measurement did not happen" 1 1 \
 '{"case":"a","error":null,"mechanical_ok":true,"checks":[],"human_review":[]}
 {"case":"b","error":"Error: down","mechanical_ok":null,"checks":[]}
 '
@@ -569,6 +787,112 @@ if [ "$hr" = "YES" ]; then
     PASS=$((PASS + 1))
 else
     echo "  FAIL — human_review never reaches the terminal"; FAIL=$((FAIL + 1))
+fi
+
+# --- run.sh end to end, against a stub binary — hermetic, no oMLX ------------------
+# Round 2 reproduced this and it is round 1's headline defect relocated: a TRANSPORT
+# failure (timeout, dead server, failed write) writes no row at all, is counted as
+# nothing, and `make eval` exits 0. The guard could not see it because it reasons only
+# about rows that exist, and had no idea how many cases were attempted.
+#
+# The stub answers --ping so the preflight passes, then answers the first tools/call and
+# goes quiet. Four of five cases vanish. That must not be a successful run.
+# NOT under scripts/tests/fixtures/ — that directory means something specific: every file
+# in it is a downloader that some version of no-unverified-download.test.sh wrongly
+# reported clean, and the scanner enumerates it as "each must be refused". Dropping test
+# stubs there made them pass as adversarial samples, which is a true statement about
+# nothing and dilutes a set CLAUDE.md says not to prune.
+STUB="$REPO/scripts/tests/stubs/stub-mcp.py"
+RUNSH="$REPO/scripts/eval/run.sh"
+runsh_case() {  # runsh_case <description> <expected exit> <STUB_MODE> <STUB_ANSWER_CALLS>
+    local desc="$1" want="$2" mode="$3" answer="$4" out rc
+    local dest="$SUITE_TMP/runsh-$RANDOM.jsonl"
+    out=$(OMLX_EVAL_BINARY="$STUB" STUB_MODE="$mode" STUB_ANSWER_CALLS="$answer" \
+          OMLX_EVAL_TIMEOUT=3 "$RUNSH" --model stub --out "$dest" \
+          --cases "$REPO/scripts/eval/cases/summarize.json" 2>&1)
+    rc=$?
+    if [ "$rc" = "$want" ]; then
+        echo "  ok   — $desc"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL — $desc (exit $rc, wanted $want)"
+        printf '%s\n' "$out" | tail -6 | sed 's/^/         /'
+        FAIL=$((FAIL + 1))
+    fi
+}
+if [ ! -x "$STUB" ]; then
+    skip "stub-mcp.py missing — run.sh end-to-end cases cannot run"
+else
+    runsh_case "a run where 4 of 5 cases time out does NOT exit 0" 1 silent 1
+    runsh_case "a run whose server dies mid-way does NOT exit 0"   1 die    1
+    # The stub's fixed reply legitimately fails one case's max_sentences:1, so this run has
+    # a finding. That is the point: a fully-answered run exits 2 (findings), never 1
+    # (the measurement did not happen). Distinguishing those two is the contract.
+    runsh_case "a fully-answered run exits 2 (findings), not 1" 2 silent 99
+
+    # The destination must only ever hold a COMPLETE run. Round 2: an incomplete run wiped
+    # results.jsonl, and the file is gitignored so nothing could be recovered — while a
+    # truncated JSONL is indistinguishable from a complete one, since no field says how
+    # many rows it should have.
+    PREV="$SUITE_TMP/prev-$RANDOM.jsonl"
+    printf '%s\n' '{"case":"from-a-previous-complete-run","error":null,"mechanical_ok":true,"checks":[]}' > "$PREV"
+    OMLX_EVAL_BINARY="$STUB" STUB_MODE=die STUB_ANSWER_CALLS=1 OMLX_EVAL_TIMEOUT=3 \
+        "$RUNSH" --model stub --out "$PREV" --cases "$REPO/scripts/eval/cases/summarize.json" >/dev/null 2>&1
+    if grep -q 'from-a-previous-complete-run' "$PREV"; then
+        echo "  ok   — an incomplete run leaves the previous results intact"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL — an incomplete run overwrote the previous complete results"
+        FAIL=$((FAIL + 1))
+    fi
+    if [ -s "$PREV.partial" ]; then
+        echo "  ok   — and what it did measure is kept, named .partial"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL — the incomplete run's rows were discarded"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+
+# --- the served model id, through the REAL binary --------------------------------
+# Round 2: the call site was untested. Reverting `Self.servedModel(...)` to plain
+# `resolvedModel` left all 136 Swift tests green — the decision function was covered, the
+# line that uses it was not. Extracting the function did NOT fix that; it only made the
+# function testable, and the mutation still survived.
+#
+# The only thing that can see the call site is the real client parsing a real response. So
+# a fake oMLX binds 127.0.0.1 and reports a `model` DIFFERENT from the one requested. If
+# the row echoes the request, this goes red.
+FAKE="$REPO/scripts/tests/stubs/fake-omlx.py"
+BIN="$REPO/.build/debug/OmlxConnectorMCP"
+if [ ! -x "$BIN" ]; then
+    skip "OmlxConnectorMCP not built — the served-model-id call site cannot be exercised"
+elif [ ! -x "$FAKE" ]; then
+    skip "fake-omlx.py missing"
+else
+    python3 "$FAKE" > "$SUITE_TMP/port" 2>/dev/null &
+    FAKE_PID=$!
+    for _ in $(seq 1 40); do [ -s "$SUITE_TMP/port" ] && break; sleep 0.1; done
+    PORT=$(cat "$SUITE_TMP/port" 2>/dev/null)
+    if [ -z "$PORT" ]; then
+        kill $FAKE_PID 2>/dev/null
+        echo "  FAIL — fake oMLX did not start"; FAIL=$((FAIL + 1))
+    else
+        served=$(OMLX_BASE_URL="http://127.0.0.1:$PORT" OMLX_EVAL_TIMEOUT=20 \
+                 "$RUNSH" --model requested-id-not-served --out "$SUITE_TMP/served.jsonl" \
+                 --cases "$REPO/scripts/eval/cases/summarize.json" >/dev/null 2>&1;
+                 python3 -c '
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print(rows[0]["model"] if rows else "NO ROWS")' "$SUITE_TMP/served.jsonl" 2>/dev/null)
+        kill $FAKE_PID 2>/dev/null; wait $FAKE_PID 2>/dev/null
+        if [ "$served" = "served-id-not-requested" ]; then
+            echo "  ok   — the row records the SERVED model id, not the requested one"
+            PASS=$((PASS + 1))
+        else
+            echo "  FAIL — row recorded '$served', expected 'served-id-not-requested'"
+            FAIL=$((FAIL + 1))
+        fi
+    fi
 fi
 
 # Every case file must name only checks that exist. A typo would otherwise surface as a

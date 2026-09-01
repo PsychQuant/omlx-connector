@@ -157,6 +157,22 @@ def cmd_score(args):
         row["checks"], row["mechanical_ok"] = run_checks(
             args.check, row["text"], case.get("expect", {}))
 
+        # expect_row: assertions about the ROW, not the reply text. `matched` is a payload
+        # field, so no text check can express "matched must be false" — and for
+        # out-of-domain content that is exactly the question issue #1 asks. Scoring it with
+        # category_member pointed the verdict BACKWARDS: the desired outcome (no label
+        # named) failed, the undesired one (forcing a label) passed.
+        for field, want in (case.get("expect_row") or {}).items():
+            got = payload.get(field)
+            row["checks"].append({
+                "check": f"row.{field}",
+                "ok": got == want,
+                "observed": got,
+                "expected": want,
+                "detail": f"{field}={got!r}" + ("" if got == want else f", expected {want!r}"),
+            })
+        row["mechanical_ok"] = all(c["ok"] for c in row["checks"])
+
     print(json.dumps(row, ensure_ascii=False))
     return 0
 
@@ -219,13 +235,35 @@ def cmd_summarize(args):
             print(f"    {case}: {q}")
 
     print()
+    # THE EXIT-CODE CONTRACT. Round 2 found the previous two-way split indefensible: a tool
+    # error exited 1 while a model returning an empty string exited 0, so the axis was
+    # "which layer did the emptiness happen at" rather than "what does it mean". Worse, the
+    # only machine-read verdict called an all-red run a success, and the test suite had
+    # pinned that as intended.
+    #
+    #   1  the run did not happen — nothing measured, or a tool/transport/malformed failure
+    #   2  the run happened and there are findings — a model did badly, which is DATA
+    #   0  the run happened and every mechanical check passed
+    #
+    # 2 rather than 1 for findings because `make eval` must not fail merely because a model
+    # is imperfect, which it always is; and not 0, because automation reading this is the
+    # only consumer that cannot read the prose above.
     if measured == 0:
         print("  NOTHING WAS MEASURED. Every call errored or the file is empty —", file=sys.stderr)
         print("  this is not a passing run, it is a run that did not happen.", file=sys.stderr)
         return 1
-    print("  A green mechanical row is NOT a statement that the model was good: coverage")
-    print("  and faithfulness are deliberately unscored. See scripts/eval/README.md.")
-    return 1 if errored or malformed else 0
+    if errored or malformed:
+        print(f"  {errored} call(s) failed and {malformed} row(s) were unreadable — the", file=sys.stderr)
+        print("  measurement is incomplete, so this run is not a result.", file=sys.stderr)
+        return 1
+    if flagged:
+        print(f"  {len(flagged)} row(s) have findings. The run itself was fine — this is a")
+        print("  measurement, not a build failure. Read them above.")
+        return 2
+    print("  Every mechanical check passed. That is NOT a statement that the model was")
+    print("  good: coverage and faithfulness are deliberately unscored, and the questions")
+    print("  above are unanswered until a person answers them. See scripts/eval/README.md.")
+    return 0
 
 
 def main(argv=None):

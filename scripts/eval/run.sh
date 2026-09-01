@@ -95,12 +95,24 @@ fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-eval.XXXXXX")
 SERVER_PID=""
-STAGING="$TMP/out.jsonl"
+STAGING="${OUT}.partial"
 : > "$STAGING"
 cleanup() {
-    exec 3>&- 2>/dev/null || true
+    # NOT `exec 3>&- 2>/dev/null` — that form applies both redirections to the shell and
+    # is exactly what server_stop below documents as harmful. It survived here for a whole
+    # round because the fix was applied to the line a reviewer named.
+    exec 3>&-
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
     rm -rf "$TMP"
+    # STAGING lives beside $OUT, not in $TMP, so an interrupted or failed run leaves the
+    # rows it did measure on disk under a name that says what they are. Round 2: staging
+    # inside $TMP meant the cleanup trap destroyed every measured row on interrupt, and
+    # the mv failure branch destroyed the very rows it had failed to publish.
+    if [ -s "$STAGING" ]; then
+        echo "  partial results kept at: $STAGING" >&2
+    else
+        rm -f "$STAGING" 2>/dev/null
+    fi
 }
 trap cleanup EXIT
 
@@ -132,6 +144,12 @@ server_stop() {
     # discarding every diagnostic after it. Close fd 3 and nothing else.
     exec 3>&-
     if [ -n "$SERVER_PID" ]; then
+        # Do NOT wait unboundedly. A server that has stopped reading stdin — hung, wedged
+        # mid-request, or asleep — never sees the EOF from closing fd 3, and `wait` then
+        # blocks forever. Found by the stub-binary test in the hermetic suite, which hung
+        # the whole of `make test` until this kill was added: the failure mode is a harness
+        # that never returns, which is worse than one that reports wrongly.
+        kill "$SERVER_PID" 2>/dev/null
         wait "$SERVER_PID" 2>/dev/null
         SERVER_PID=""
     fi
@@ -215,10 +233,23 @@ for model in "${MODELS[@]}"; do
             request=$(python3 "$RPC" request \
                           --case-file "$case_file" --index "$idx" --id "$RPC_ID" --model "$model")
             case_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"])' "$case_file" "$idx")
+            case_tool=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["tool"])' "$case_file" "$idx")
             printf '  %-28s ' "$case_id"
 
             if ! rpc_send "$request" || ! rpc_await "$RPC_ID"; then
                 echo "ERROR (no response)"
+                # WRITE A ROW. Round 1 found the guard failing open when every call
+                # returned a tool error; round 2 found the same failure one layer out,
+                # because a TRANSPORT failure produced no row at all and the verdict
+                # reasons only about rows that exist. Four of five cases could vanish and
+                # `make eval` still exited 0. An error row is how the verdict learns.
+                python3 -c '
+import json, sys
+print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": sys.argv[3] or None,
+                  "model": None, "elapsed_seconds": None, "finish_reason": None,
+                  "text": None, "checks": [], "mechanical_ok": None,
+                  "human_review": [], "error": "transport: no response from the server"},
+                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" >> "$STAGING"
                 idx=$((idx + 1))
                 server_alive || break
                 continue
@@ -228,6 +259,13 @@ for model in "${MODELS[@]}"; do
                            --case-file "$case_file" --index "$idx" \
                            --model-requested "$model" --check "$CHECK"); then
                 echo "ERROR (scoring failed)"
+                python3 -c '
+import json, sys
+print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": sys.argv[3] or None,
+                  "model": None, "elapsed_seconds": None, "finish_reason": None,
+                  "text": None, "checks": [], "mechanical_ok": None,
+                  "human_review": [], "error": "scoring failed"},
+                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" >> "$STAGING"
                 idx=$((idx + 1))
                 continue
             fi
@@ -256,8 +294,50 @@ done
 # survivor was indistinguishable from a complete single-model file, because nothing in it
 # says how many rows it should have. Staging plus a rename means the destination is only
 # ever replaced by a run that reached this line.
-mv "$STAGING" "$OUT" || { echo "could not write $OUT" >&2; exit 1; }
-: > "$STAGING"
+# THE DESTINATION ONLY EVER HOLDS A COMPLETE RUN.
+#
+# Round 2: a run that measured nothing still wiped results.jsonl, destroying the previous
+# run's evidence — and the file is gitignored, so there was nothing to fall back to. The
+# first fix (publish when staging is non-empty) stopped working the moment transport
+# failures started writing error rows: staging was non-empty again, and a five-row file of
+# which four are errors would have replaced a complete one.
+#
+# So the gate is what the file will MEAN, not whether it has bytes: at least one measured
+# reply and no failures. Anything else stays under `.partial`, named for what it is, and
+# $OUT keeps the last complete run. This is the property the README claims when it calls
+# the file a measurement record — a silently truncated record is worse than none, and
+# nothing inside it says how many rows it should have had.
+INCOMPLETE=$(python3 - "$STAGING" <<'PYEOF'
+import json, sys
+measured = errored = 0
+try:
+    for line in open(sys.argv[1], encoding="utf-8"):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            errored += 1
+            continue
+        errored += 1 if row.get("error") else 0
+        measured += 0 if row.get("error") else 1
+except OSError:
+    print("no output file")
+    raise SystemExit
+if measured == 0:
+    print("nothing was measured")
+elif errored:
+    print(f"{errored} of {measured + errored} call(s) failed")
+PYEOF
+)
+if [ -n "$INCOMPLETE" ]; then
+    echo >&2
+    echo "  incomplete run ($INCOMPLETE) — $OUT left as it was." >&2
+    echo "  What this run did produce: $STAGING" >&2
+    python3 "$RPC" summarize --out "$STAGING"
+    exit 1
+fi
+mv "$STAGING" "$OUT" || { echo "could not publish to $OUT; rows kept at $STAGING" >&2; exit 1; }
 
 echo
 python3 "$RPC" summarize --out "$OUT"

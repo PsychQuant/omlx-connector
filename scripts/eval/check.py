@@ -103,7 +103,14 @@ _PREAMBLE_PATTERNS = [
     r"here(?: is| are|'s)\b",
     r"(?:the following|below) (?:is|are)\b",
     r"this is (?:a |the )?(?:summary|translation|rewrite|answer|result)\b",
-    r"i(?:'ve| have| will| ?'ll| am going to)\b",
+    # A first-person opener is NOT a preamble by itself: "I will attend the meeting on
+    # Tuesday" and "I have three concerns" are ordinary content. It becomes one only when
+    # a meta word follows — the model talking about the act of producing output. The bare
+    # form flagged both, and its Chinese twin below had the identical defect: round 2
+    # fixed the one line a reviewer named and left the class open, which is the failure
+    # CLAUDE.md has a section about.
+    r"i(?:'ve| have| will| ?'ll| am going to)[^.!?\n]{0,40}"
+    r"(?:summari[sz]|rewr(?:ite|ote)|translat|outlin|paraphras|as follows|below)",
     r"let me\b",
     r"as requested\b",
     r"(?:以下|下面)(?:是|為|为|就是)",
@@ -114,7 +121,8 @@ _PREAMBLE_PATTERNS = [
     # flagged ordinary content like 當然可以達成這個目標。
     r"(?:當然|当然)[，,、:：]",
 
-    r"我(?:已經|已经|會|会|來|来|將|将)",
+    r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,14}"
+    r"(?:摘要|總結|总结|整理|翻譯|翻译|改寫|改写|如下|回答)",
     r"(?:摘要|總結|总结)(?:如下|如下：)",
 ]
 _PREAMBLE_RE = re.compile("|".join(_PREAMBLE_PATTERNS), re.IGNORECASE)
@@ -143,14 +151,30 @@ def check_no_preamble(text, expect):
 # discredit the harness, whereas a miss only under-reports. This check finds mixing; it
 # does not certify purity, and any report should say so.
 #
-# THE DIRECTION IS NOW ENFORCED, NOT PROMISED. The first version stated this rule in a
-# comment and then broke it in the data: 紫 (紫色) and 凰 (鳳凰) are the SAME codepoint in
-# both scripts, and 划 (划算) and 据 (拮据) are ordinary Traditional characters — all four
-# flagged clean Traditional replies, in the one check written for the constituency
-# issue #1 calls "non-negotiable". Twenty members were encodable in Big5 (a
-# Traditional-only charset), which is the mechanical form of the test the prose was
-# describing. All twenty are gone, and scripts/tests/eval-checks.test.sh asserts the
-# property directly, so re-adding one fails the hermetic suite rather than a reviewer.
+# TWO ROUNDS OF GETTING THIS WRONG, IN OPPOSITE DIRECTIONS. Worth keeping both.
+#
+# Round 1: the rule was stated here and broken in the data. 紫 (紫色) and 凰 (鳳凰) are the
+# SAME codepoint in both scripts, and 划 (划算) and 据 (拮据) are ordinary Traditional
+# characters — all four flagged clean Traditional replies, in the one check written for the
+# constituency issue #1 calls non-negotiable.
+#
+# Round 2 "fixed" it by removing every member encodable in Big5, on the theory that Big5
+# being Traditional-only made encodability the mechanical form of the rule. It is not.
+# Big5 also carries rare ARCHAIC Traditional variants of characters that are, in any modern
+# text, plain Simplified markers: 么 (麼), 听 (聽), 圣 (聖), 网 (網), 复 (復/複), 宁 (寧)…
+# Twenty members went; only four were the false-positive sources. The other sixteen were
+# real detection, and `什么` — about the highest-frequency Simplified-exclusive word there
+# is — started passing silently. The property test made that irreversible.
+#
+# So the sixteen are back, and the guard is a CORPUS rather than a computable property:
+# a list of clean Traditional sentences that must all pass, and a list of Simplified
+# content that must all be flagged, sampled across every line of this set so deleting one
+# fails. Whether a character is Simplified-only is a fact about language, not a property of
+# an encoding, and pretending otherwise is what bought the regression.
+#
+# The residual cost, stated rather than hidden: an archaic or classical Traditional text
+# using 宁 (zhù) or 听 (yǐn) is flagged. That is a real false positive and it is accepted —
+# eval replies are modern prose, and `什么` outweighs 門屏之間 by orders of magnitude.
 _SIMPLIFIED_ONLY = set(
     "这个们会国说时实对发为样点过还进问题关开间长东车见话记认识学写讲议论设计试请谢边远连选达迟爱头买卖员"
     "产业务动办报纸轮转载运输银钱铁钢铜铅锁针线纺织级红绿蓝绍继续经络给结绝统绕维绵编缩缝罗币师帅归当尽层"
@@ -160,7 +184,7 @@ _SIMPLIFIED_ONLY = set(
     "赵趋跃践跄踪蹑轧轨轩软轰轻较辆辈辉辐辖辗辙辞辽迁违逊递逻遗邓邮邻郑酝释钉钊钓钟钥钦钩钮钳钻铃铝铭铸铺"
     "链销锅锋锐错锡锦键锯镇镜镖门闪闭闯闲闷闻阀阁阅阔队阶阳阴阵陆陈险随隐难雾韦韩顶顷项顺须顽顾顿颁颂预领"
     "颇颈频颖颗题颜额颠风飘飞饥饭饮饰饱饲饼馆驱驰驳驶驻驼驾骂骄验骑骗骤髅鱼鲁鲜鸟鸡鸣鸦鸭鸿鹅鹏鹤鹰麦齐齿"
-    "龄龙龟两"
+    "龄龙龟两么听圣坏复宁庄怀惊扑扰网胜赶适吨"
 )
 
 
@@ -228,8 +252,32 @@ def check_non_empty(text, expect):
     }
 
 
+# ── label_is ─────────────────────────────────────────────────────────────────────
+# Accuracy against a labelled set — issue #1's first ask for local_classify, and the most
+# mechanically-checkable expectation in the whole harness: one string comparison.
+#
+# It was declined for a round on the stated grounds that automating it "needs a labelled
+# set this repo does not have", while the case file two lines away said "the answer should
+# be `bug`". The labels existed as PROSE in human_review. This moves them into `expect`,
+# where a check can see them — `expect` was always the gold-data channel; nothing about the
+# text-in/verdict-out contract had to change.
+def check_label_is(text, expect):
+    gold = expect.get("expected")
+    if not isinstance(gold, str) or not gold.strip():
+        raise ValueError("label_is needs a non-empty 'expected' string")
+    normalized = text.strip().strip(_TRAILING_PUNCT).strip().casefold()
+    want = gold.strip().casefold()
+    return {
+        "ok": normalized == want,
+        "observed": text.strip()[:80],
+        "expected": {"expected": gold},
+        "detail": f"answered {normalized!r}" + ("" if normalized == want else f", gold is {want!r}"),
+    }
+
+
 CHECKS = {
     "non_empty": check_non_empty,
+    "label_is": check_label_is,
     "sentence_count": check_sentence_count,
     "no_preamble": check_no_preamble,
     "script_purity": check_script_purity,

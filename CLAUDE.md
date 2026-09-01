@@ -407,14 +407,31 @@ accident. The *checks* it applies are pure text functions and are unit-tested in
 suite (`scripts/tests/eval-checks.test.sh`), so they stay verified where no model exists.
 
 The trap it is built against is the one every eval harness falls into: plausible rows, nothing
-actually asserted — and the first round fell into it anyway. The checks were shipped calling
-themselves "mutation-proven in both directions", which held only for replacing a whole `ok`
-expression with a constant; a verify round injected real logic mutations (an off-by-one on the
-ceiling, `all()` → `any()`, deleting 11 of 13 preamble patterns) and the suite stayed green for
-every one. The fixtures came from the same mental model as the code, which is the trap recorded
-three sections up, entered a fourth time by the commit that cited it. The fixtures now sit on
-the boundary and a 12-mutation sweep leaves no survivors, but note what that costs: **the claim
-is about a point in time, because the sweep is not part of `make test`.**
+actually asserted — and it took three rounds to get out of it, in a way worth recording because
+each round's fix was correct and insufficient in the same shape.
+
+Round 1 shipped checks calling themselves "mutation-proven in both directions". That held only
+for replacing a whole `ok` expression with a constant; real logic mutations — an off-by-one on
+the ceiling, `all()` → `any()`, deleting 11 of 13 preamble patterns — all stayed green, because
+the fixtures came from the same mental model as the code. Round 2 pinned the **code paths** and
+declared the class closed. It was not: the same trap had moved onto the **constant tables**,
+where deleting any one line of the Simplified set, or shrinking it to exactly the floor the
+tests asserted, still ran green. Round 3 pinned the tables with per-character probes plus an
+assertion that every line still has one.
+
+**The pattern across all three is the same, and it is the point:** each round fixed the
+instances a reviewer named and left the class open one layer out. `當然|当然[，,、:：]` was fixed
+and its identical twin `我(?:已經|會|來|將)` — and the English `i(?:'ve| have| will)` — were not,
+so ordinary first-person content was scored as preamble for a round. The guard was moved out of
+bash and made testable, and then failed open on transport errors instead of tool errors. The
+served-model-id decision was extracted into a tested function, and reverting its **call site**
+still left every test green until a fake oMLX server exercised the real client. Citing the
+"fix the property, not the file" section is not the same as obeying it, and this file is now
+three demonstrations of that.
+
+**The sweep is still not part of `make test`** — it takes ~30 suite runs — so the claim remains
+about a point in time. When you change a check or a table, re-run it, and expect the class you
+thought you closed to have moved.
 
 The results are recorded in `scripts/eval/README.md` rather than summarised as a pass, for the
 same reason. Five summarize cases across three model sizes came back **all-green mechanically**

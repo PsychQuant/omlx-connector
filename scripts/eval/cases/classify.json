@@ -1,16 +1,18 @@
 {
   "_comment": [
-    "local_classify cases. Round 1 shipped none, and the README's 'cases are data' claim",
-    "was false for this tool: handleClassify's payload is task/category/matched/raw_response",
-    "with no `text` key at all, so category_member was handed the empty string and would",
-    "have refused EVERY reply — 'a check that refuses everything', in the one check with no",
-    "positive case to catch it. rpc.py is now payload-shape-aware and the hermetic suite",
-    "covers both the matched and unmatched paths, so these really are just data.",
+    "local_classify cases. The gold labels live in `expect.label_is`, not in prose.",
     "",
-    "What is checked mechanically: did the model answer with a bare label from the list.",
-    "Whether the label is CORRECT is a human_review question — an automated answer would",
-    "need a labelled set this repo does not have, and issue #1's clarification puts",
-    "judgement of correctness on the human side."
+    "They used to live in `human_review` strings — 'Correctness: the answer should be `bug`'",
+    "— while this comment and the README both claimed automating accuracy 'needs a labelled",
+    "set this repo does not have'. The set was right there, two lines away, in the wrong",
+    "column. On the live rows a 0.6B answered `feature request` where the gold was `bug` and",
+    "the row read mechanical_ok: true, because nothing was comparing them.",
+    "",
+    "Three checks do different jobs here and the distinction matters:",
+    "  label_is        — is the answer CORRECT (against the gold label)",
+    "  category_member — is the answer a BARE LABEL from the offered list, as instructed",
+    "  expect_row      — assertions about the row, e.g. matched:false on out-of-domain input",
+    "A model can be right and undisciplined ('I would say bug'), or disciplined and wrong."
   ],
   "cases": [
     {
@@ -19,14 +21,27 @@
       "tool": "local_classify",
       "arguments": {
         "text": "The effect size was too small and it disappeared after two weeks.",
-        "categories": ["positive", "negative", "neutral"]
+        "categories": [
+          "positive",
+          "negative",
+          "neutral"
+        ]
       },
       "expect": {
-        "category_member": { "categories": ["positive", "negative", "neutral"] }
+        "label_is": {
+          "expected": "negative"
+        },
+        "category_member": {
+          "categories": [
+            "positive",
+            "negative",
+            "neutral"
+          ]
+        }
       },
       "human_review": [
-        "Correctness: the answer should be `negative`. Issue #1 observed a 0.6B answering `positive` here.",
-        "If `matched` is false, the model decorated its answer instead of returning a bare label — a different failure from getting the label wrong, and the row distinguishes them."
+        "Issue #1 observed a 0.6B answering `positive` here. label_is now decides that; what is left for you is whether a wrong answer was a near miss (neutral) or an inversion (positive).",
+        "If category_member failed while label_is passed, the model was right but decorated its answer."
       ]
     },
     {
@@ -35,31 +50,48 @@
       "tool": "local_classify",
       "arguments": {
         "text": "The app crashes on launch whenever the config file is missing.",
-        "categories": ["bug", "feature request", "question"]
+        "categories": [
+          "bug",
+          "feature request",
+          "question"
+        ]
       },
       "expect": {
-        "category_member": { "categories": ["bug", "feature request", "question"] }
+        "label_is": {
+          "expected": "bug"
+        },
+        "category_member": {
+          "categories": [
+            "bug",
+            "feature request",
+            "question"
+          ]
+        }
       },
       "human_review": [
-        "Correctness: the answer should be `bug`.",
-        "Compare `text` (the raw reply) with `category` (what the server matched it to). A gap between them is decoration the caller never asked for."
+        "Compare `text` (the raw reply) with `category` (what the server matched it to). A gap between them is decoration the caller never asked for.",
+        "This is the case where a 0.6B answered `feature request`: correct-looking row, wrong answer, until label_is existed."
       ]
     },
     {
       "id": "classify-none-of-the-above",
-      "why": "Issue #1: 'Whether matched: false fires when it should.' Nothing in the offered list fits, so a well-behaved model has no honest bare label to give. This case measures what happens at that boundary; it is expected to be interesting rather than green.",
+      "why": "Issue #1: 'Whether matched: false fires when it should.' Nothing in the offered list fits, so a well-behaved model has no honest bare label to give. The expectation is a ROW fact (matched must be false), not a text fact — scoring it with category_member pointed the verdict backwards: the desired outcome failed and forcing a label passed.",
       "tool": "local_classify",
       "arguments": {
         "text": "測試測試測試",
-        "categories": ["bug", "feature request"]
+        "categories": [
+          "bug",
+          "feature request"
+        ]
       },
-      "expect": {
-        "category_member": { "categories": ["bug", "feature request"] }
-      },
+      "expect": {},
       "human_review": [
-        "Did `matched` come back false, or did the model force one of the two labels onto content that fits neither?",
-        "A forced label that matches is WORSE than an unmatched reply: it looks clean in the row and is wrong. This is the case where a green mechanical verdict is least trustworthy."
-      ]
+        "A forced label that matches is WORSE than an unmatched reply: it looks clean and is wrong. That is now a mechanical failure rather than a note.",
+        "There is no gold label here on purpose — the right behaviour is to name none of them."
+      ],
+      "expect_row": {
+        "matched": false
+      }
     }
   ]
 }

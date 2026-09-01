@@ -9,6 +9,20 @@ make eval                                             # whatever oMLX has loaded
 make eval MODELS="--model A --model B --model C"      # the comparison that matters
 ```
 
+**Exit codes**, because the exit status is the only part of this a machine reads:
+
+| | |
+|---|---|
+| `0` | the run happened and every mechanical check passed |
+| `2` | the run happened and there are **findings** — a model did badly, which is data, not a build failure |
+| `1` | the run did **not** happen: nothing measured, or a tool/transport/malformed failure |
+
+The two-way version of this was indefensible: a tool error exited 1 while a model returning
+an empty string exited 0, so the axis was *which layer the emptiness happened at* rather
+than what it meant — and an all-red run reported success. `results.jsonl` is only replaced
+by a **complete** run; an incomplete one leaves the previous file alone and writes what it
+did measure to `results.jsonl.partial`.
+
 Output is `scripts/eval/results.jsonl`, one row per (model × case). It is a
 measurement record, not a score: **the interesting output is where the cliff is**, and
 a single number would destroy exactly that. The file is gitignored — a committed
@@ -23,11 +37,11 @@ measurement goes stale silently, and a stale one is worse than none.
 | `elapsed_seconds` | wall clock for that call. First call to a cold model includes the load |
 | `finish_reason` | present **only** when the model did not stop on its own. A reply truncated at the token limit is a different finding from one that ignored the instruction |
 | `text` | the reply, verbatim. Read it — see below |
-| `checks`, `mechanical_ok` | the mechanical verdicts. **Not** `all_ok` — that name is the reading this whole file forbids, and it is what any downstream pass-rate would have taken |
+| `checks`, `mechanical_ok` | the mechanical verdicts. **Not** `all_ok` — that name is the reading this whole file forbids, and it is what any downstream pass-rate would have taken. Includes `row.<field>` entries from a case's `expect_row` |
 | `text`, `text_field` | which payload key was checked. `local_classify` has no `text` key; it is scored on `raw_response` |
 | `category`, `matched` | `local_classify` only. `matched: false` is the issue's actual question about that tool |
 | `human_review` | what a person still has to decide. Nothing scores these |
-| `error` | a tool or transport error. Recorded as a result, not raised as a crash |
+| `error` | a tool **or transport** error. Both are recorded as results rather than raised — and transport failures really do produce a row now: for a round they produced nothing at all, so four of five cases could vanish and the run still exit 0 |
 
 ## What is checked mechanically, and what is not
 
@@ -35,34 +49,43 @@ Five checks, in `check.py`. Each is a pure function of the reply text, and each 
 unit-tested in the **hermetic** suite (`scripts/tests/eval-checks.test.sh`) with a fixture
 it must fail on and one it must pass on, so they stay verified on a machine with no oMLX.
 
-**On "mutation-proven", carefully, because the first version of this sentence was false.**
-It claimed the checks were mutation-proven in both directions. That held only for the
-coarsest possible mutation — replacing an entire `ok` expression with a constant. A
-reviewer injected real logic mutations and the suite stayed green for all of them: an
-off-by-one on the sentence ceiling, `all()` → `any()`, removing the regex anchoring,
-deleting 11 of the 13 preamble patterns one at a time, and shrinking the 422-character
-Simplified set to two characters. The fixtures came from the same mental model as the
-code, so they could not disconfirm it — the trap `CLAUDE.md` had already recorded three
-times, walked into a fourth.
-
-What is true now is narrower and checkable: a sweep of 12 targeted logic mutations plus
-per-pattern deletion of all 13 preamble regexes leaves **zero survivors**. The fixtures
-sit on the boundary (3-vs-2, not 4-vs-2) for that reason. The sweep is not automated —
-it lives in this round's history, not in `make test` — so treat it as a claim about a
-point in time, and re-run it when you change a check.
-
 | check | asks |
 |---|---|
-| `non_empty` | did the model reply at all? Runs on **every** case regardless of what `expect` says, because an empty reply used to satisfy all three of the others trivially, and a case with no `expect` used to produce a green row having checked nothing |
+| `non_empty` | did the model reply at all? Runs on **every** case regardless of what `expect` says, because an empty reply used to satisfy all the others trivially, and a case with no `expect` used to produce a green row having checked nothing |
 | `sentence_count` | was `max_sentences` respected? (a ceiling — under-shooting is not a violation) |
 | `no_preamble` | did the reply start with content, or with "Here is a summary of…"? The server sends `outputOnlyRule` as its system prompt on every call; this measures whether the model obeyed it |
 | `script_purity` | Traditional Chinese asked for, Simplified characters delivered? |
-| `category_member` | is the label one of the offered candidates, or a sentence mentioning one? (for `local_classify`; no cases use it yet) |
+| `category_member` | is the label one of the offered candidates, or a sentence mentioning one? Answers "did it follow the format", **not** "was it right" |
+| `label_is` | is the answer **correct**, against a gold label in `expect`? A model can be right and undisciplined ("I would say bug"), or disciplined and wrong; these two checks separate those |
 
-**Coverage and faithfulness are deliberately not judged.** Issue #1 asks for them to be
-"recorded for human review", and an LLM-as-judge would replace a judgement with another
-black box that itself needs verifying. They appear as `human_review` prompts on each
-case, answerable only by reading `text`.
+A case may also carry `expect_row`, which asserts on **row fields** rather than reply text —
+`{"matched": false}` for out-of-domain classify input, where the right behaviour is to name
+none of the offered labels. No text check can express that: scoring it with
+`category_member` pointed the verdict backwards, failing the desired outcome and passing the
+undesired one.
+
+**On mutation coverage, carefully, because this sentence has been wrong twice.**
+
+Round 1 claimed the checks were "mutation-proven in both directions". That held only for
+replacing a whole `ok` expression with a constant; real logic mutations all left the suite
+green. Round 2 fixed that for **code paths** — 12 targeted mutations and per-pattern
+deletion of every preamble regex, zero survivors — and then claimed the class was closed.
+It was not: the same trap had moved onto the **constant tables**. Deleting any one line of
+`_SIMPLIFIED_ONLY` survived (8 of 10 lines), shrinking the set to exactly the asserted floor
+survived, `_TERMINATORS` losing `！？…` survived, and `_CLOSERS` losing its whitespace
+survived — because a table's power was pinned only by whichever characters happened to
+appear in some fixture.
+
+What is true now, measured rather than asserted: every line of `_SIMPLIFIED_ONLY` has a
+per-character probe tested **alone**, plus an assertion that every line still *has* one, so
+the coverage cannot weaken silently as the table is re-wrapped; `_TERMINATORS` and
+`_CLOSERS` have fixtures using `？`, `！`, `…` and a trailing newline. All of those
+mutations now go red.
+
+**The sweep is still not part of `make test`** — it takes ~30 suite runs. So this remains a
+claim about a point in time, and the honest reading of two rounds of getting it wrong is:
+when you change a check or a table, re-run the sweep, and expect to find that the class you
+thought you closed has moved one layer out.
 
 ### Each check's limits, stated rather than papered over
 
@@ -80,19 +103,29 @@ A check whose failure modes are written down beats one that pretends to be exact
   clean reply and quietly discredit the harness, whereas a miss only under-reports. **It
   finds mixing; it does not certify purity.**
 
-  That direction is now *enforced*, not promised. The first version stated the rule here
-  and broke it in the data: `紫` (紫色) and `凰` (鳳凰) are the same codepoint in both
-  scripts, and `划` (划算) and `据` (拮据) are ordinary Traditional characters — all four
-  flagged clean Traditional replies, in the one check written for the constituency issue #1
-  calls non-negotiable. Twenty members of the set were encodable in **Big5**, a
-  Traditional-only charset, which is the mechanical form of the sentence the prose was
-  trying to make. All twenty are gone, and the hermetic suite now asserts both halves:
-  no member may encode in Big5, and the set may not shrink below 300 characters (so
-  emptying it — which satisfies the first assertion perfectly — fails the second).
+  This has now been wrong in both directions, and both are worth keeping. Round 1 stated
+  the rule here and broke it in the data: `紫` (紫色) and `凰` (鳳凰) are the same codepoint
+  in both scripts, and `划` (划算) and `据` (拮据) are ordinary Traditional characters — all
+  four flagged clean Traditional replies. Round 2 "fixed" that by removing every member
+  encodable in **Big5**, on the theory that a Traditional-only charset made encodability the
+  mechanical form of the rule. It is not: Big5 also carries rare archaic Traditional
+  variants of characters that are plain Simplified markers in modern text. Twenty went;
+  only four were the false-positive sources. The other sixteen — `么听圣坏复宁庄怀惊扑扰网胜赶适吨`
+  — were real detection, and `什么`, about the highest-frequency Simplified-exclusive word
+  there is, began passing silently. The property test made it irreversible.
 
-  It still cannot see the other half of the failure issue #1 documents: a model that
-  answers a Chinese prompt *in English* passes trivially, since there are no Han characters
-  to be Simplified. The Chinese case carries a `human_review` line about exactly that.
+  The sixteen are back, and the guard is a **corpus** rather than a computable property:
+  clean Traditional sentences that must all pass, Simplified content that must all be
+  flagged, and a per-character probe from every line of the set. Whether a character is
+  Simplified-only is a fact about language, not a property of an encoding.
+
+  The residual cost, stated rather than hidden: a classical or archaic Traditional text
+  using `宁` (zhù) or `听` (yǐn) is flagged. That is a real false positive, accepted because
+  eval replies are modern prose.
+
+  It still cannot see the other half of the failure issue #1 documents: a model that answers
+  a Chinese prompt *in English* passes trivially, since there are no Han characters to be
+  Simplified. The Chinese case carries a `human_review` line about exactly that.
 
 ## Read the replies. Green does not mean good.
 
@@ -118,14 +151,32 @@ all**. That is a finding about the checks, not a clean bill of health for the mo
 length and preamble compliance are the easy part, and everything that separated the
 0.6B from the 27B was in the half no check touches.
 
-The `local_classify` cases make the same point more sharply, because there the mechanical
-verdict is closest to looking like an answer. All three came back green on the 0.6B, and
-**two of the three are wrong**: "The app crashes on launch whenever the config file is
-missing" was classified `feature request`, and 「測試測試測試」 — content that fits neither
-offered label — was forced into `feature request` as well. A forced label *matches*, so
-`matched` stays true and the row looks clean. That is the worst case this harness has: a
-green verdict that is not merely uninformative but actively misleading, and only the
-`human_review` line says so.
+The `local_classify` cases were the sharpest illustration of the problem, and are now the
+sharpest illustration of the fix. For two rounds all three came back **green on the 0.6B
+with two of the three answers wrong**: "The app crashes on launch whenever the config file
+is missing" classified `feature request`, and 「測試測試測試」 — content fitting neither
+offered label — forced into `feature request` as well. A forced label *matches*, so
+`matched` stayed true and the row looked clean. The gold labels existed the whole time, as
+prose in `human_review`, while this file claimed automating them "needs a labelled set this
+repo does not have".
+
+With `label_is` and `expect_row` those same replies read:
+
+```
+model: Qwen3-0.6B-4bit
+  classify-negative-hedged       ok
+  classify-bare-label-discipline FLAG   label_is
+  classify-none-of-the-above     FLAG   row.matched
+model: Qwen3-4B-Instruct-2507-4bit
+  classify-negative-hedged       ok
+  classify-bare-label-discipline ok
+  classify-none-of-the-above     FLAG   row.matched
+```
+
+Two findings at 0.6B, one at 4B — **the cliff, visible mechanically**, which is what issue #1
+asked for and what the first two rounds could not show. Note also what stays a human's job:
+`classify-negative-hedged` is `ok` on both, and whether a near-miss (`neutral`) would have
+been better than an inversion (`positive`) is not something `label_is` can weigh.
 
 Do not report a green run as "the model passed".
 
@@ -135,13 +186,15 @@ Cases are data (`cases/*.json`). `tool` and `arguments` go straight to `tools/ca
 `expect` names checks in `check.py`; the hermetic suite asserts every name in every case
 file exists, so a typo fails in seconds rather than mid-run against a live model.
 
-**A new tool is data only if its payload shape is already handled.** This paragraph used
-to say a new tool "means a new file, not a change to `run.sh` or `check.py`", and that was
-false for the one tool it was making a promise about: `local_classify`'s payload is
-`task/category/matched/raw_response` with no `text` key, so `rpc.py` needed a shape-aware
-extractor before any classify case could work at all. `render()`-shaped tools
-(`local_rewrite`, `local_complete`) are genuinely data; anything else needs a look at
-`checkable_text()` first.
+**A new tool is data only if its payload shape is already handled, and a new KIND of
+expectation is never data.** This paragraph once said a new tool "means a new file, not a
+change to `run.sh` or `check.py`", and that was false for the one tool it promised about:
+`local_classify`'s payload is `task/category/matched/raw_response` with no `text` key, so
+`rpc.py` needed a shape-aware extractor first. `render()`-shaped tools (`local_rewrite`,
+`local_complete`) are genuinely data; anything else needs a look at `checkable_text()`.
+
+Likewise `label_is` (a new check) and `expect_row` (a new expectation channel) each took
+code. What is data is a new *case* using mechanisms that exist.
 
 ## Shape, and why
 
@@ -184,10 +237,11 @@ closed pipe. `run.sh` holds it with an explicit fd on a FIFO (macOS ships bash 3
 
 - `local_rewrite`, `local_complete`, `local_models` — the issue's own first step is
   summarize alone. The case format is tool-agnostic, so these are data later.
-- **Whether a classify label is correct.** `classify.json` checks that the model answered
-  with a bare label from the list; whether that label is the right one is a `human_review`
-  question. Automating it needs a labelled set this repo does not have, and the issue's
-  clarification puts judgement of correctness on the human side.
+- **Judging *how* wrong a wrong label is.** `label_is` decides correct/incorrect against a
+  gold label; whether an incorrect answer was a near miss or an inversion is a
+  `human_review` question. (An earlier version of this bullet claimed correctness itself
+  could not be automated "without a labelled set this repo does not have" — the labels were
+  in the case files at the time, written as prose.)
 - CI — needs a live oMLX and Apple silicon.
 - A formal benchmark with pre-registration. That discipline lives in
   `local-llm-benchmarking` and stays there.

@@ -260,9 +260,7 @@ actor OmlxClient: OmlxClienting {
         return CompletionResult(
             text: text,
             reasoning: choice.message.reasoning_content,
-            // Prefer what the server reports over what we asked for. They usually agree;
-            // the times they do not are exactly the times the recorded id matters.
-            model: decoded.model ?? resolvedModel,
+            model: Self.servedModel(reported: decoded.model, requested: resolvedModel),
             finishReason: choice.finish_reason,
             completionTokens: decoded.usage?.completion_tokens,
             elapsedSeconds: decoded.usage?.total_time
@@ -270,6 +268,21 @@ actor OmlxClient: OmlxClienting {
     }
 
     // MARK: Internals
+
+    /// Which model id to record: what the server says it served, falling back to what we
+    /// asked for. They usually agree; the times they do not are exactly the times the
+    /// recorded id matters, which is why issue #1 asks for it with every result.
+    ///
+    /// Internal and static so it can be tested. The previous form was an inline
+    /// `decoded.model ?? resolvedModel` at the call site, and reverting it to plain
+    /// `resolvedModel` left the entire suite green — the decode was covered, the line using
+    /// it was not.
+    static func servedModel(reported: String?, requested: String) -> String {
+        guard let reported, !reported.trimmingCharacters(in: .whitespaces).isEmpty else {
+            return requested
+        }
+        return reported
+    }
 
     private func resolveModel(explicit: String?) async throws -> String {
         if let explicit, !explicit.isEmpty { return explicit }
