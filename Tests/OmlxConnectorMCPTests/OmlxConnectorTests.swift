@@ -207,3 +207,36 @@ final class ToolDispatchTests: XCTestCase {
         }
     }
 }
+
+// MARK: - The served model id, not the requested one
+
+/// `CompletionResult.model` used to echo whatever was asked for: `resolveModel(explicit:)`
+/// returns a non-empty `explicit` unchanged, `ChatResponse` never decoded the response's
+/// own `model` field, and the result was built from the request. So on the `--model` path
+/// the two were identical by construction.
+///
+/// That silently defeats issue #1's "record the model id with every result": the eval
+/// harness's `model` and `model_requested` columns were the same value in all 15 rows of
+/// the first cross-size run, while `scripts/eval/README.md` described them as "what oMLX
+/// actually served vs. what was asked for". An alias, a quantization the server picked, or
+/// a fallback would all have gone unrecorded.
+final class ServedModelIdTests: XCTestCase {
+    func testDecodesTheModelIdTheServerReports() throws {
+        let json = """
+        {"model":"mlx-community--Qwen3-4B-Instruct-2507-4bit",
+         "choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ChatResponse.self, from: json)
+        XCTAssertEqual(decoded.model, "mlx-community--Qwen3-4B-Instruct-2507-4bit")
+    }
+
+    /// oMLX is not required to echo it. Absent must decode cleanly as nil so the caller
+    /// can fall back to the requested id rather than the whole call failing.
+    func testAModelIdIsOptional() throws {
+        let json = """
+        {"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ChatResponse.self, from: json)
+        XCTAssertNil(decoded.model)
+    }
+}

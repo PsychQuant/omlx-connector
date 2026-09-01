@@ -106,7 +106,9 @@ private struct ChatRequest: Encodable {
     let chat_template_kwargs: TemplateKwargs?
 }
 
-private struct ChatResponse: Decodable {
+/// Internal, not private: a test decodes it directly. The alternative was leaving the
+/// served-model-id fix uncovered, which is how the defect it fixes got in.
+struct ChatResponse: Decodable {
     struct Choice: Decodable {
         struct Message: Decodable {
             let content: String?
@@ -126,6 +128,16 @@ private struct ChatResponse: Decodable {
 
     let choices: [Choice]
     let usage: Usage?
+    /// What the server says it actually served. Optional because oMLX is not required to
+    /// echo it, and a missing key must not fail the whole call.
+    ///
+    /// Without this, `CompletionResult.model` was built from the *request*: an explicit
+    /// `model` argument comes back out of `resolveModel(explicit:)` unchanged, so the
+    /// requested and served ids were identical by construction. Issue #1 asks for the
+    /// model id to be recorded with every result precisely so results are comparable; an
+    /// echo of the request records nothing an alias, a server-side fallback, or a
+    /// different quantization could contradict.
+    let model: String?
 }
 
 private struct ErrorEnvelope: Decodable {
@@ -248,7 +260,9 @@ actor OmlxClient: OmlxClienting {
         return CompletionResult(
             text: text,
             reasoning: choice.message.reasoning_content,
-            model: resolvedModel,
+            // Prefer what the server reports over what we asked for. They usually agree;
+            // the times they do not are exactly the times the recorded id matters.
+            model: decoded.model ?? resolvedModel,
             finishReason: choice.finish_reason,
             completionTokens: decoded.usage?.completion_tokens,
             elapsedSeconds: decoded.usage?.total_time

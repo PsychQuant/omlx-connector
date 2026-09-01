@@ -1,0 +1,65 @@
+{
+  "_comment": [
+    "local_classify cases. Round 1 shipped none, and the README's 'cases are data' claim",
+    "was false for this tool: handleClassify's payload is task/category/matched/raw_response",
+    "with no `text` key at all, so category_member was handed the empty string and would",
+    "have refused EVERY reply — 'a check that refuses everything', in the one check with no",
+    "positive case to catch it. rpc.py is now payload-shape-aware and the hermetic suite",
+    "covers both the matched and unmatched paths, so these really are just data.",
+    "",
+    "What is checked mechanically: did the model answer with a bare label from the list.",
+    "Whether the label is CORRECT is a human_review question — an automated answer would",
+    "need a labelled set this repo does not have, and issue #1's clarification puts",
+    "judgement of correctness on the human side."
+  ],
+  "cases": [
+    {
+      "id": "classify-negative-hedged",
+      "why": "Issue #1 records this exact failure: a 0.6B model classified 'the effect size was too small and it disappeared after two weeks' as POSITIVE. The sentiment is negative and stated plainly; only the academic register is neutral. This is the regression case the issue asks for.",
+      "tool": "local_classify",
+      "arguments": {
+        "text": "The effect size was too small and it disappeared after two weeks.",
+        "categories": ["positive", "negative", "neutral"]
+      },
+      "expect": {
+        "category_member": { "categories": ["positive", "negative", "neutral"] }
+      },
+      "human_review": [
+        "Correctness: the answer should be `negative`. Issue #1 observed a 0.6B answering `positive` here.",
+        "If `matched` is false, the model decorated its answer instead of returning a bare label — a different failure from getting the label wrong, and the row distinguishes them."
+      ]
+    },
+    {
+      "id": "classify-bare-label-discipline",
+      "why": "The tool's prompt says 'Reply with the category name alone, copied exactly as written above.' Small models decorate ('Category: bug', 'I would say bug.'). The server matches decorated replies back onto the list, so `matched` stays true — which is why raw_response, not category, is what gets checked here.",
+      "tool": "local_classify",
+      "arguments": {
+        "text": "The app crashes on launch whenever the config file is missing.",
+        "categories": ["bug", "feature request", "question"]
+      },
+      "expect": {
+        "category_member": { "categories": ["bug", "feature request", "question"] }
+      },
+      "human_review": [
+        "Correctness: the answer should be `bug`.",
+        "Compare `text` (the raw reply) with `category` (what the server matched it to). A gap between them is decoration the caller never asked for."
+      ]
+    },
+    {
+      "id": "classify-none-of-the-above",
+      "why": "Issue #1: 'Whether matched: false fires when it should.' Nothing in the offered list fits, so a well-behaved model has no honest bare label to give. This case measures what happens at that boundary; it is expected to be interesting rather than green.",
+      "tool": "local_classify",
+      "arguments": {
+        "text": "測試測試測試",
+        "categories": ["bug", "feature request"]
+      },
+      "expect": {
+        "category_member": { "categories": ["bug", "feature request"] }
+      },
+      "human_review": [
+        "Did `matched` come back false, or did the model force one of the two labels onto content that fits neither?",
+        "A forced label that matches is WORSE than an unmatched reply: it looks clean in the row and is wrong. This is the case where a green mechanical verdict is least trustworthy."
+      ]
+    }
+  ]
+}

@@ -75,9 +75,15 @@ def extract_reply(response):
         return None, "reply was not JSON: %s" % text[:200]
 
 
+# Runs on EVERY case, whatever `expect` says. Without it, a case with an empty or missing
+# `expect` produced `checks: []` and a green row — the harness reporting without checking,
+# in its own code. It also catches the plainest delegation failure there is: an empty reply
+# used to satisfy every other check trivially.
+ALWAYS = {"non_empty": {}}
+
+
 def run_checks(check_path, text, spec):
-    if not spec:
-        return [], True
+    spec = dict(ALWAYS, **(spec or {}))
     proc = subprocess.run(
         [sys.executable, check_path, "--spec", json.dumps(spec, ensure_ascii=False)],
         input=text,
@@ -89,7 +95,26 @@ def run_checks(check_path, text, spec):
         # silently does not run is an eval that reports without checking.
         raise SystemExit("check.py failed (%d): %s" % (proc.returncode, proc.stderr.strip()))
     out = json.loads(proc.stdout)
-    return out["checks"], out["all_ok"]
+    return out["checks"], out["mechanical_ok"]
+
+
+# `render()` (summarize / rewrite / complete) emits `text`; `handleClassify` emits
+# `task/category/matched/raw_response` and no `text` at all. `payload.get("text", "")` fed
+# category_member the empty string, which is never in the candidate list — so it would
+# have refused EVERY classify reply. That is "a check that refuses everything", the trap
+# CLAUDE.md already records, reproduced in the one check with no positive case.
+#
+# raw_response, not category, is what gets checked: `category` has already been matched
+# back onto the caller's list by the server, so checking it against that same list is a
+# tautology. raw_response is the model's actual reply, which is what "did it answer with a
+# bare label as instructed" asks about.
+def checkable_text(payload):
+    if payload.get("task") == "classify" or "raw_response" in payload:
+        return payload.get("raw_response") or "", "raw_response"
+    # `.get(key, "")` defaults only on a MISSING key; an explicit JSON null returns None,
+    # and None reaching subprocess.run(input=None) means "do not redirect stdin", so
+    # check.py inherited this process's already-consumed stdin and checked "" instead.
+    return payload.get("text") or "", "text"
 
 
 def cmd_score(args):
@@ -107,7 +132,13 @@ def cmd_score(args):
         "finish_reason": None,
         "text": None,
         "checks": [],
-        "all_ok": None,
+        "mechanical_ok": None,
+        "text_field": None,
+        # Present only for local_classify. `matched` is the issue's actual question about
+        # that tool — a wrong-but-matched answer and an unmatched one are different
+        # failures — and the row dropped both.
+        "category": None,
+        "matched": None,
         # Carried into the row on purpose: the half of issue #1 that is deliberately not
         # auto-judged has to be visible to whoever reads the results, or it evaporates.
         "human_review": case.get("human_review", []),
@@ -120,11 +151,81 @@ def cmd_score(args):
         # token limit is a different finding from a reply that ignored the instruction,
         # and a row that conflates them invites the wrong conclusion.
         row["finish_reason"] = payload.get("finish_reason")
-        row["text"] = payload.get("text", "")
-        row["checks"], row["all_ok"] = run_checks(args.check, row["text"], case.get("expect", {}))
+        row["text"], row["text_field"] = checkable_text(payload)
+        row["category"] = payload.get("category")
+        row["matched"] = payload.get("matched")
+        row["checks"], row["mechanical_ok"] = run_checks(
+            args.check, row["text"], case.get("expect", {}))
 
     print(json.dumps(row, ensure_ascii=False))
     return 0
+
+
+def cmd_summarize(args):
+    """The run's verdict, as a pure function of the output file.
+
+    This used to be inline bash in run.sh counting rows APPENDED, under a comment saying
+    "a green eval that ran no cases is the reporting-without-checking failure in its
+    purest form". A recorded tool error is a row, so a run in which every single call
+    failed printed "5 row(s) written, 0 error(s)" and exited 0 — the guard failing open
+    on exactly the state it existed to catch. It was reproduced against the real binary.
+
+    Counting the right thing is half the fix; the other half is being able to test it at
+    all, which inline bash was not.
+    """
+    measured = errored = malformed = 0
+    flagged = []
+    review = []
+    try:
+        lines = open(args.out, encoding="utf-8").read().splitlines()
+    except OSError as e:
+        print(f"  cannot read {args.out}: {e}", file=sys.stderr)
+        return 1
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            malformed += 1
+            continue
+        if row.get("error"):
+            errored += 1
+            continue
+        measured += 1
+        bad = [c["check"] for c in row.get("checks", []) if not c.get("ok")]
+        if bad:
+            flagged.append((row.get("case"), row.get("model"), bad))
+        for q in row.get("human_review", []):
+            review.append((row.get("case"), q))
+
+    print(f"  measured={measured}  errored={errored}  malformed={malformed}")
+    if flagged:
+        print(f"  {len(flagged)} row(s) failed a mechanical check:")
+        for case, model, bad in flagged:
+            print(f"    {case}  [{model}]  {', '.join(bad)}")
+
+    # The half issue #1 asks NOT to be auto-judged. run.sh never printed these — the
+    # questions were written into the file and then never put in front of anyone, so
+    # "recorded for human review" was one-directional. Printing them is the minimum.
+    if review:
+        print()
+        print("  NOT CHECKED BY ANYTHING — read the `text` field and answer these yourself:")
+        seen = set()
+        for case, q in review:
+            if (case, q) in seen:
+                continue
+            seen.add((case, q))
+            print(f"    {case}: {q}")
+
+    print()
+    if measured == 0:
+        print("  NOTHING WAS MEASURED. Every call errored or the file is empty —", file=sys.stderr)
+        print("  this is not a passing run, it is a run that did not happen.", file=sys.stderr)
+        return 1
+    print("  A green mechanical row is NOT a statement that the model was good: coverage")
+    print("  and faithfulness are deliberately unscored. See scripts/eval/README.md.")
+    return 1 if errored or malformed else 0
 
 
 def main(argv=None):
@@ -144,6 +245,10 @@ def main(argv=None):
     s.add_argument("--model-requested", default="")
     s.add_argument("--check", required=True)
     s.set_defaults(func=cmd_score)
+
+    z = sub.add_parser("summarize")
+    z.add_argument("--out", required=True)
+    z.set_defaults(func=cmd_summarize)
 
     args = p.parse_args(argv)
     return args.func(args)

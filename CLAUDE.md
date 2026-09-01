@@ -360,10 +360,13 @@ the `OmlxClienting` protocol. When adding a tool, add it to `defineTools()` and 
 `executeToolCall`; `testEveryDeclaredToolDispatches` will catch the second if you
 forget it.
 
-`make test` also runs `scripts/tests/*.test.sh`. Those are not extras — the two things
-they assert cannot be expressed in the Swift suite: that `verify-download.sh` refuses a
-binary forging `TeamIdentifier` in `codesign` output, and that **no** script under
-`plugin/` downloads or execs without going through the shared fetcher.
+`make test` also runs `scripts/tests/*.test.sh`. Those are not extras — what they assert
+cannot be expressed in the Swift suite: that `verify-download.sh` refuses a binary forging
+`TeamIdentifier` in `codesign` output, that **no** script under `plugin/` downloads or
+execs without going through the shared fetcher, and that the eval harness's mechanical
+checks behave (`eval-checks.test.sh`, see below). The count is deliberately not stated
+here: an enumeration of "the two things" went stale the moment a third suite landed, and
+nothing went red.
 
 What the tests do *not* cover: anything requiring a live oMLX server. Before releasing,
 run the three that need one, in this order:
@@ -391,8 +394,12 @@ It is **not** part of `make test`, and the separation is structural rather than 
 subdirectory cannot join the hermetic run by accident. Making that glob recursive would
 silently undo it and give `make test` a live-server dependency.
 
-**Nor whether the delegated work is any good.** Every test in `Tests/` uses `StubClient`;
-not one sends anything to a real model. `make eval` (`scripts/eval/`, issue #1) drives the
+**Nor whether the delegated work is any good.** Not one of the 133 tests in `Tests/`
+sends anything to a real model — `StubClient` fakes the client where one is needed at all,
+and most of the suite (launcher settings, loopback classification, version ordering) needs
+no client. An earlier draft of this paragraph said "every test uses `StubClient`", which is
+false: three of the four files never mention it. The claim that matters is the one about
+real models, and it survives. `make eval` (`scripts/eval/`, issue #1) drives the
 shipped binary over JSON-RPC against a live oMLX server and writes one JSONL row per
 (model × case) — deliberately outside `make test`, since it needs a model loaded and takes
 seconds to minutes per case, and outside both existing globs so it cannot join either by
@@ -400,13 +407,25 @@ accident. The *checks* it applies are pure text functions and are unit-tested in
 suite (`scripts/tests/eval-checks.test.sh`), so they stay verified where no model exists.
 
 The trap it is built against is the one every eval harness falls into: plausible rows, nothing
-actually asserted. Hence the mutation proof on each check, and hence the first cross-size run's
-result being recorded in `scripts/eval/README.md` rather than summarised as a pass — five
-summarize cases across three model sizes came back **all-green mechanically** while the 0.6B
-dropped a third of the load-bearing items and inverted a word. Length and preamble compliance
-are the easy half; coverage and faithfulness are handed to a human on purpose, because an
-LLM-as-judge only swaps one unverified judgement for another. **An all-green eval row is not a
-statement that the model was good.**
+actually asserted — and the first round fell into it anyway. The checks were shipped calling
+themselves "mutation-proven in both directions", which held only for replacing a whole `ok`
+expression with a constant; a verify round injected real logic mutations (an off-by-one on the
+ceiling, `all()` → `any()`, deleting 11 of 13 preamble patterns) and the suite stayed green for
+every one. The fixtures came from the same mental model as the code, which is the trap recorded
+three sections up, entered a fourth time by the commit that cited it. The fixtures now sit on
+the boundary and a 12-mutation sweep leaves no survivors, but note what that costs: **the claim
+is about a point in time, because the sweep is not part of `make test`.**
+
+The results are recorded in `scripts/eval/README.md` rather than summarised as a pass, for the
+same reason. Five summarize cases across three model sizes came back **all-green mechanically**
+while the 0.6B dropped a third of the load-bearing items and inverted a word; three classify
+cases came back all-green while two of the three answers were wrong, one of them a label forced
+onto content that fit neither option — which *matches*, and so looks clean. Length, preamble and
+membership compliance are the easy half; coverage and correctness are handed to a human on
+purpose, because an LLM-as-judge only swaps one unverified judgement for another. **A green eval
+row is not a statement that the model was good** — and the row's boolean is called
+`mechanical_ok`, not `all_ok`, because naming it after the doctrine beats restating the doctrine
+next to a field that contradicts it.
 
 Having a runner is not the same as having a trigger. `make test-headed` is reached only by
 the pre-release checklist above, deliberately — a person following it, not automation. Issue #18

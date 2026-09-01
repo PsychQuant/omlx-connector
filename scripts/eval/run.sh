@@ -1,42 +1,62 @@
 #!/bin/bash
 # Delegation-quality evaluation harness (issue #1).
 #
-# WHAT THIS IS: the 18 tests in Tests/ all use StubClient — not one sends anything to a
-# real model. They answer "does the code behave as designed" and answer it well. They
-# say nothing about whether the delegated work is any GOOD. This drives the shipped
-# binary against a live oMLX server and records what came back.
+# WHAT THIS IS: the tests in Tests/ answer "does the code behave as designed" and answer
+# it well. They say nothing about whether the delegated work is any GOOD. This drives the
+# shipped binary against a live oMLX server over stdio JSON-RPC and records what came back.
 #
 # WHY IT IS NOT IN `make test`: it needs a model loaded, takes seconds to minutes per
-# case, and cannot run in CI. Folding it into a fast hermetic suite is how suites stop
-# being run. It also lives OUTSIDE both existing globs — scripts/tests/*.test.sh and
-# scripts/tests/headed/*.test.sh — so it cannot join either by accident. Separation by
-# file layout, not by a flag anyone has to remember (the #17 lesson).
+# case, and cannot run in CI. It also lives OUTSIDE both existing globs —
+# scripts/tests/*.test.sh and scripts/tests/headed/*.test.sh — so it cannot join either by
+# accident. Separation by file layout, not by a flag anyone has to remember (#17's lesson).
 #
-# WHAT IT DOES NOT CLAIM: nothing here scores coverage or faithfulness. Those are
-# presented for a human to read. See README.md in this directory.
+# WHAT IT DOES NOT CLAIM: nothing here scores coverage or faithfulness, and a green
+# mechanical row is not a statement that the model was good. See README.md.
 set -u
+
+# Writing to a FIFO whose reader has exited raises SIGPIPE, whose default action is to
+# kill the shell outright. That skipped the entire summary — including both guards — and
+# left the EXIT trap unrun, so a run that died mid-way looked like a run that produced a
+# short file. Ignoring it turns the write into an ordinary failure we can handle.
+trap '' PIPE
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BINARY="${OMLX_EVAL_BINARY:-$REPO/.build/debug/OmlxConnectorMCP}"
 CASE_DIR="$REPO/scripts/eval/cases"
 CHECK="$REPO/scripts/eval/check.py"
-OMLX_URL="${OMLX_URL:-http://127.0.0.1:8000}"
+RPC="$REPO/scripts/eval/rpc.py"
 OUT="${OMLX_EVAL_OUT:-$REPO/scripts/eval/results.jsonl}"
 TIMEOUT="${OMLX_EVAL_TIMEOUT:-600}"   # a cold model load is minutes, not seconds
 MODELS=()
 CASE_FILES=()
 
+# `$(( … + TIMEOUT ))` evaluates the CONTENTS of a variable named inside it, so an
+# unvalidated OMLX_EVAL_TIMEOUT from the environment reached an arithmetic context and
+# could execute arbitrary commands. Demonstrated on macOS /bin/bash 3.2 in the round-1
+# verify. Validate before it goes anywhere near `$(( ))`.
+case "$TIMEOUT" in
+    ''|*[!0-9]*) echo "OMLX_EVAL_TIMEOUT must be a whole number of seconds, got: $TIMEOUT" >&2; exit 2 ;;
+esac
+[ "$TIMEOUT" -gt 0 ] || { echo "OMLX_EVAL_TIMEOUT must be positive" >&2; exit 2; }
+
+# A missing option value used to die with bash's raw "$2: unbound variable" under set -u,
+# while every other argument error here gets a named message.
+need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "$1 needs a value" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
     case "$1" in
-        --model)  MODELS+=("$2"); shift 2 ;;
-        --cases)  CASE_FILES+=("$2"); shift 2 ;;
-        --out)    OUT="$2"; shift 2 ;;
+        --model)  need "$@"; MODELS+=("$2"); shift 2 ;;
+        --cases)  need "$@"; CASE_FILES+=("$2"); shift 2 ;;
+        --out)    need "$@"; OUT="$2"; shift 2 ;;
         --help|-h)
-            sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            # Renders the comment header only. The old form hard-coded a line range that
+            # had drifted past the header and printed four lines of source code, plus a
+            # test count ("the 18 tests in Tests/") that was never true.
+            sed -n '3,${/^#/!q;p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             echo
             echo "usage: run.sh [--model ID]... [--cases FILE]... [--out PATH]"
             echo "  --model may repeat; omit it to let oMLX serve whatever it has loaded."
-            echo "  env: OMLX_URL, OMLX_EVAL_BINARY, OMLX_EVAL_TIMEOUT, OMLX_EVAL_OUT"
+            echo "  env: OMLX_BASE_URL (the server; same variable the MCP binary reads),"
+            echo "       OMLX_EVAL_BINARY, OMLX_EVAL_TIMEOUT, OMLX_EVAL_OUT"
             exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -45,24 +65,40 @@ done
 [ ${#CASE_FILES[@]} -gt 0 ] || CASE_FILES=("$CASE_DIR"/*.json)
 [ ${#MODELS[@]} -gt 0 ] || MODELS=("")   # "" = no model override; the server decides
 
-# ── Preconditions. Each aborts: an eval that quietly ran zero cases and exited 0 is
-# the exact "reporting without checking" failure this harness exists to avoid. ──────
+# ── Preconditions ─────────────────────────────────────────────────────────────────
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 [ -x "$BINARY" ] || {
     echo "not built: $BINARY" >&2
     echo "  run: swift build   (or set OMLX_EVAL_BINARY)" >&2
     exit 1
 }
-curl -s -m 5 "$OMLX_URL/v1/models" >/dev/null 2>&1 || {
-    echo "no oMLX server at $OMLX_URL — nothing to evaluate" >&2
-    echo "  start oMLX, or set OMLX_URL" >&2
+
+# THE PREFLIGHT IS THE BINARY'S OWN. The first version curled `$OMLX_URL` — which is the
+# *usage-1* variable read by omlx-claude, while the binary this harness drives reads
+# `OMLX_BASE_URL` (OmlxClient.swift:19). So the go/no-go check verified an address the run
+# never used: a live server on one port and a dead one on the other produced a green
+# preflight and five tool errors. That is the same shape as the managed-settings defect
+# CLAUDE.md describes ("the loopback gate will have verified an address the session does
+# not use"), reproduced in a new file.
+#
+# `--ping` cannot drift from what the run uses, because it IS the run's client: same
+# variable, same OmlxConfig.resolveBaseURL, and therefore same LoopbackPolicy. That last
+# part also settles the other half — CLAUDE.md forbids "a third path that resolves an
+# address without consulting the policy", and a bash reimplementation here would have been
+# a fourth.
+if ! PING=$("$BINARY" --ping 2>&1); then
+    echo "oMLX preflight failed — nothing to evaluate" >&2
+    printf '%s\n' "$PING" | sed 's/^/  /' >&2
+    echo "  start oMLX, or set OMLX_BASE_URL to where it listens" >&2
     exit 1
-}
+fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-eval.XXXXXX")
 SERVER_PID=""
+STAGING="$TMP/out.jsonl"
+: > "$STAGING"
 cleanup() {
-    exec 3>&- 2>/dev/null
+    exec 3>&- 2>/dev/null || true
     [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
     rm -rf "$TMP"
 }
@@ -73,13 +109,13 @@ trap cleanup EXIT
 # written for this closed it right after writing the request; the server exited without
 # answering, which looks exactly like a broken server rather than a closed pipe.
 #
-# `exec 3>"$FIFO"` is what holds it open — the fd outlives each write. macOS ships bash
-# 3.2, which has no `coproc`, and a FIFO plus an explicit fd states the mechanism more
-# plainly than a coprocess would anyway.
+# `exec 3>"$FIFO"` holds it open — the fd outlives each write. macOS ships bash 3.2, which
+# has no `coproc`, and an explicit fd on a FIFO states the mechanism more plainly anyway.
 RPC_ID=0
 LINES_READ=0
+RESPONSE=""
 
-server_start() {   # server_start
+server_start() {
     local fifo="$TMP/stdin"
     rm -f "$fifo" "$TMP/stdout" "$TMP/stderr"
     mkfifo "$fifo"
@@ -91,27 +127,37 @@ server_start() {   # server_start
 }
 
 server_stop() {
-    exec 3>&- 2>/dev/null
+    # `exec 3>&- 2>/dev/null` applies BOTH redirections to the current shell, permanently:
+    # the first model's iteration silently closed run.sh's stderr for the rest of the run,
+    # discarding every diagnostic after it. Close fd 3 and nothing else.
+    exec 3>&-
     if [ -n "$SERVER_PID" ]; then
         wait "$SERVER_PID" 2>/dev/null
         SERVER_PID=""
     fi
 }
 
-rpc_send() { printf '%s\n' "$1" >&3; }
+server_alive() { [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; }
 
-# rpc_await <id> — echoes the matching response object, or returns 1 on timeout.
-# Responses are newline-delimited JSON; anything without our id (notifications, log
-# lines) is skipped rather than mistaken for the answer.
+rpc_send() {
+    # Check before writing, not after. rpc_await's dead-server check came too late: the
+    # next write to the orphaned FIFO happened first.
+    server_alive || { echo "server is gone; not sending" >&2; return 1; }
+    printf '%s\n' "$1" >&3 || { echo "write to server failed" >&2; return 1; }
+}
+
+# Sets $RESPONSE. Deliberately NOT called through $( ) — command substitution runs in a
+# subshell, so LINES_READ's increments never reached the parent and every await re-read
+# the whole file from line 1. The cursor is documented as cross-call state; now it is.
 rpc_await() {
     local want="$1" deadline=$(( $(date +%s) + TIMEOUT )) total line hit
+    RESPONSE=""
     while [ "$(date +%s)" -lt "$deadline" ]; do
         total=$(wc -l < "$TMP/stdout" | tr -d ' ')
-        if [ "$total" -gt "$LINES_READ" ]; then
-            while [ "$LINES_READ" -lt "$total" ]; do
-                LINES_READ=$((LINES_READ + 1))
-                line=$(sed -n "${LINES_READ}p" "$TMP/stdout")
-                hit=$(printf '%s' "$line" | python3 -c '
+        while [ "$LINES_READ" -lt "$total" ]; do
+            LINES_READ=$((LINES_READ + 1))
+            line=$(sed -n "${LINES_READ}p" "$TMP/stdout")
+            hit=$(printf '%s' "$line" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -119,12 +165,9 @@ except Exception:
     sys.exit(1)
 sys.exit(0 if d.get("id") == int(sys.argv[1]) else 1)
 ' "$want" 2>/dev/null && printf '%s' "$line")
-                [ -n "$hit" ] && { printf '%s' "$hit"; return 0; }
-            done
-        fi
-        # The server is gone and nothing matched: report it rather than spinning out
-        # the full timeout on a process that already exited.
-        kill -0 "$SERVER_PID" 2>/dev/null || { echo "server exited: $(tail -3 "$TMP/stderr")" >&2; return 1; }
+            [ -n "$hit" ] && { RESPONSE="$hit"; return 0; }
+        done
+        server_alive || { echo "server exited: $(tail -3 "$TMP/stderr")" >&2; return 1; }
         sleep 0.2
     done
     echo "timed out after ${TIMEOUT}s waiting for response id=$want" >&2
@@ -137,18 +180,15 @@ handshake() {
 import json,sys
 print(json.dumps({"jsonrpc":"2.0","id":int(sys.argv[1]),"method":"initialize","params":{
   "protocolVersion":"2024-11-05","capabilities":{},
-  "clientInfo":{"name":"omlx-eval","version":"1"}}}))' "$RPC_ID")"
-    rpc_await "$RPC_ID" >/dev/null || return 1
+  "clientInfo":{"name":"omlx-eval","version":"1"}}}))' "$RPC_ID")" || return 1
+    rpc_await "$RPC_ID" || return 1
     rpc_send '{"jsonrpc":"2.0","method":"notifications/initialized"}'
 }
 
 # ── Run ───────────────────────────────────────────────────────────────────────────
-: > "$OUT"
-ROWS=0
-ERRORS=0
 echo "eval → $OUT"
 echo "  binary: $BINARY"
-echo "  server: $OMLX_URL"
+printf '%s\n' "$PING" | sed 's/^/  /'
 
 for model in "${MODELS[@]}"; do
     echo
@@ -156,42 +196,44 @@ for model in "${MODELS[@]}"; do
     server_start
     if ! handshake; then
         echo "  handshake failed — skipping this model" >&2
-        ERRORS=$((ERRORS + 1))
         server_stop
         continue
     fi
 
     for case_file in "${CASE_FILES[@]}"; do
-        [ -f "$case_file" ] || { echo "  no such case file: $case_file" >&2; ERRORS=$((ERRORS+1)); continue; }
-        count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file")
+        [ -f "$case_file" ] || { echo "  no such case file: $case_file" >&2; continue; }
+        # A malformed or empty case file used to be skipped in silence: python failed,
+        # `count` was empty, and `[ "$idx" -lt "" ]` quietly evaluated false.
+        if ! count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file" 2>&1); then
+            echo "  unreadable case file $case_file: $count" >&2
+            continue
+        fi
+        [ "$count" -gt 0 ] || { echo "  case file has no cases: $case_file" >&2; continue; }
         idx=0
         while [ "$idx" -lt "$count" ]; do
             RPC_ID=$((RPC_ID + 1))
-            request=$(python3 "$REPO/scripts/eval/rpc.py" request \
+            request=$(python3 "$RPC" request \
                           --case-file "$case_file" --index "$idx" --id "$RPC_ID" --model "$model")
             case_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"])' "$case_file" "$idx")
             printf '  %-28s ' "$case_id"
 
-            rpc_send "$request"
-            if ! response=$(rpc_await "$RPC_ID"); then
+            if ! rpc_send "$request" || ! rpc_await "$RPC_ID"; then
                 echo "ERROR (no response)"
-                ERRORS=$((ERRORS + 1))
                 idx=$((idx + 1))
+                server_alive || break
                 continue
             fi
 
-            row=$(printf '%s' "$response" | python3 "$REPO/scripts/eval/rpc.py" score \
-                      --case-file "$case_file" --index "$idx" \
-                      --model-requested "$model" --check "$CHECK")
-            rc=$?
-            if [ $rc -ne 0 ]; then
+            if ! row=$(printf '%s' "$RESPONSE" | python3 "$RPC" score \
+                           --case-file "$case_file" --index "$idx" \
+                           --model-requested "$model" --check "$CHECK"); then
                 echo "ERROR (scoring failed)"
-                ERRORS=$((ERRORS + 1))
                 idx=$((idx + 1))
                 continue
             fi
-            printf '%s\n' "$row" >> "$OUT"
-            ROWS=$((ROWS + 1))
+            # A failed append used to leave the row counter incremented anyway, so the
+            # guard counted attempts rather than writes.
+            printf '%s\n' "$row" >> "$STAGING" || { echo "ERROR (could not write row)"; exit 1; }
             printf '%s\n' "$row" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
@@ -204,16 +246,21 @@ fin = "" if not d.get("finish_reason") else "  [%s]" % d["finish_reason"]
 print("%s  %5.1fs  %s%s%s" % (mark, d.get("elapsed_seconds") or 0.0, d.get("model") or "?", fin, extra))'
             idx=$((idx + 1))
         done
+        server_alive || break
     done
     server_stop
 done
 
+# Publish atomically. The first version truncated the destination BEFORE the first model
+# ran, so a run that died part-way had already destroyed the previous results — and the
+# survivor was indistinguishable from a complete single-model file, because nothing in it
+# says how many rows it should have. Staging plus a rename means the destination is only
+# ever replaced by a run that reached this line.
+mv "$STAGING" "$OUT" || { echo "could not write $OUT" >&2; exit 1; }
+: > "$STAGING"
+
 echo
-echo "  $ROWS row(s) written, $ERRORS error(s)"
-# Zero rows means the harness measured nothing. That must not exit 0 — a green eval
-# that ran no cases is the reporting-without-checking failure in its purest form.
-[ "$ROWS" -gt 0 ] || { echo "  no rows produced — nothing was evaluated" >&2; exit 1; }
-echo "  read them: python3 -m json.tool < $OUT   (or: jq . $OUT)"
-echo "  FLAG marks a mechanical check that failed. Coverage and faithfulness are NOT"
-echo "  scored — read the 'text' field and judge those yourself."
-[ "$ERRORS" -eq 0 ] || exit 1
+python3 "$RPC" summarize --out "$OUT"
+RC=$?
+echo "  rows: $OUT"
+exit $RC

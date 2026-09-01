@@ -36,7 +36,11 @@ mcpb/*.mcpb.sha256
 # and a stale one is worse than none — regenerate it instead (see scripts/eval/README.md).
 scripts/eval/results.jsonl
 
-# Bytecode from running check.py / rpc.py. `git add -A scripts/eval` swept one of these
-# into the first commit of the harness; it is build output, not source.
+# Bytecode from running check.py / rpc.py — and `make test` now produces some, because
+# eval-checks.test.sh loads check.py through importlib. It is build output, not source.
+# (`git add -A scripts/eval` did sweep one into the harness's first commit; that commit was
+# amended before it was reviewed, so no .pyc appears in the history. Saying "was committed"
+# here described a state that no longer existed — a small instance of the message-shaped
+# bug this repo keeps producing.)
 __pycache__/
 *.pyc

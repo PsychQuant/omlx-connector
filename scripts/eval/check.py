@@ -33,6 +33,10 @@ import sys
 # whose failure modes are written down beats one that pretends to be exact.
 _TERMINATORS = ".!?。！？…"
 
+# Characters that can legitimately follow a sentence's own terminator: quotes, brackets,
+# markdown emphasis, whitespace. Anything left after stripping these is a real clause.
+_CLOSERS = "\"'\u201c\u201d\u2018\u2019\u300d\u300f\uff09)\u300b\u3009\u3011]}*_`~ \t\r\n\u3000"
+
 
 def sentence_count(text):
     n = 0
@@ -54,15 +58,25 @@ def sentence_count(text):
             i += 1
     # Trailing content with no terminator is still a sentence — small models often
     # drop the final full stop, and counting that as zero would flatter them.
+    #
+    # But "content" must mean content. The first version counted ANY non-blank
+    # remainder, so a closing delimiter belonging to the sentence just counted added a
+    # phantom one: `He said "Go."` scored 2, and so did `**… 5 April.**` and `…。」`.
+    # That is a false positive on the check that decides most rows, in the direction
+    # this file's own script_purity comment calls the more damaging one. The four
+    # fixtures in the suite all ended on a bare terminator or a word, so none of them
+    # could see it.
     tail = re.split("[" + re.escape(_TERMINATORS) + "]", text)[-1]
-    if tail.strip():
+    if tail.strip(_CLOSERS):
         n += 1
     return n
 
 
 def check_sentence_count(text, expect):
     ceiling = expect.get("max")
-    if not isinstance(ceiling, int):
+    # `bool` subclasses `int` in Python, so the obvious check lets `"max": true` through
+    # as a silent ceiling of 1. Exclude it explicitly.
+    if not isinstance(ceiling, int) or isinstance(ceiling, bool):
         raise ValueError("sentence_count needs an integer 'max'")
     observed = sentence_count(text)
     return {
@@ -83,7 +97,10 @@ def check_sentence_count(text, expect):
 # were deferred: budget, venue") from being flagged.
 _PREAMBLE_PATTERNS = [
     r"(?:sure|certainly|of course|okay|ok)\s*[,!:.]",
-    r"here (?:is|are|'s)\b",
+    # The space belongs INSIDE the group. With it outside, the three alternatives read
+    # `here is` / `here are` / `here 's`, so "Here's" — the commonest English preamble
+    # opener there is — could never match and the `'s` branch was unreachable.
+    r"here(?: is| are|'s)\b",
     r"(?:the following|below) (?:is|are)\b",
     r"this is (?:a |the )?(?:summary|translation|rewrite|answer|result)\b",
     r"i(?:'ve| have| will| ?'ll| am going to)\b",
@@ -92,7 +109,11 @@ _PREAMBLE_PATTERNS = [
     r"(?:以下|下面)(?:是|為|为|就是)",
     r"這(?:是|就是)(?:一份|一個|一个)?(?:摘要|翻譯|翻译|結果|结果|回答)",
     r"好的[，,、:：]",
-    r"當然|当然[，,、:：]",
+    # `|` binds looser than the character class, so `當然|当然[，,、:：]` meant (當然) OR
+    # (当然 + punctuation) — the Traditional form carried no punctuation requirement and
+    # flagged ordinary content like 當然可以達成這個目標。
+    r"(?:當然|当然)[，,、:：]",
+
     r"我(?:已經|已经|會|会|來|来|將|将)",
     r"(?:摘要|總結|总结)(?:如下|如下：)",
 ]
@@ -118,22 +139,28 @@ def check_no_preamble(text, expect):
 # Traditional and Simplified.
 #
 # A CURATED set of characters that exist only in Simplified. It is not exhaustive, and
-# that direction is chosen: characters valid in BOTH scripts are deliberately left out
-# (里, 干, 万, 与, 云, 后, 几, 峰, 靜, 黃 …), because a false positive would flag a clean
-# reply and quietly discredit the harness, whereas a miss only under-reports. Say so in
-# any report: this check finds mixing, it does not certify purity.
+# that direction is chosen: a false positive would flag a clean reply and quietly
+# discredit the harness, whereas a miss only under-reports. This check finds mixing; it
+# does not certify purity, and any report should say so.
+#
+# THE DIRECTION IS NOW ENFORCED, NOT PROMISED. The first version stated this rule in a
+# comment and then broke it in the data: 紫 (紫色) and 凰 (鳳凰) are the SAME codepoint in
+# both scripts, and 划 (划算) and 据 (拮据) are ordinary Traditional characters — all four
+# flagged clean Traditional replies, in the one check written for the constituency
+# issue #1 calls "non-negotiable". Twenty members were encodable in Big5 (a
+# Traditional-only charset), which is the mechanical form of the test the prose was
+# describing. All twenty are gone, and scripts/tests/eval-checks.test.sh asserts the
+# property directly, so re-adding one fails the hermetic suite rather than a reviewer.
 _SIMPLIFIED_ONLY = set(
-    "这个们会国说时实对发为么样点过还进问题关开间长东车见话记认识学写讲议论设计试请谢"
-    "边远连选适达迟爱头买卖员产业务动办报纸轮转载运输银钱铁钢铜铅锁针线纺织级红绿蓝紫"
-    "绍继续经络给结绝统绕维绵编缩缝网罗币师帅归当尽层属岁岗峡巩击凤凰凭刘划则刚创删剑"
-    "劳势勋胜匀区医华协单卫厅历厉压厌厨县参双变听吗吨响哑唤啸图园圆圣块坏坚坛垒场声壮"
-    "壳处备复夺奋奖妆妇妈娄学孙宁宝审宪岛巅帮带帜庄庆库应庙废弹张录彻径忆态怀总恋恳恶"
-    "恼惊惧惨惯懒战扑执扩扪扫扬扰抚护拟拢拣挚挡挤挥捞损捡换据掷掸摄摆摊撵攒败货贝贞负"
-    "贡财责贤贩贪贫贯贱贴贵贷贸费贺贼贾赁资赋赌赏赐赔赖赚赞赠赢赵赶趋跃践跄踪蹑轧轨轩"
-    "软轰轻较辆辈辉辐辖辗辙辞辽迁违逊递逻遗邓邮邻郑酝释钉钊钓钟钥钦钩钮钳钻铃铝铭铸铺"
-    "链销锅锋锐错锡锦键锯镇镜镖门闪闭闯闲闷闻阀阁阅阔队阶阳阴阵陆陈险随隐难雾韦韩顶顷"
-    "项顺须顽顾顿颁颂预领颇颈频颖颗题颜额颠风飘飞饥饭饮饰饱饲饼馆驱驰驳驶驻驼驾骂骄验"
-    "骑骗骤髅鱼鲁鲜鸟鸡鸣鸦鸭鸿鹅鹏鹤鹰麦齐齿龄龙龟两"
+    "这个们会国说时实对发为样点过还进问题关开间长东车见话记认识学写讲议论设计试请谢边远连选达迟爱头买卖员"
+    "产业务动办报纸轮转载运输银钱铁钢铜铅锁针线纺织级红绿蓝绍继续经络给结绝统绕维绵编缩缝罗币师帅归当尽层"
+    "属岁岗峡巩击凤凭刘则刚创删剑劳势勋匀区医华协单卫厅历厉压厌厨县参双变吗响哑唤啸图园圆块坚坛垒场声壮壳"
+    "处备夺奋奖妆妇妈娄学孙宝审宪岛巅帮带帜庆库应庙废弹张录彻径忆态总恋恳恶恼惧惨惯懒战执扩扪扫扬抚护拟拢"
+    "拣挚挡挤挥捞损捡换掷掸摄摆摊撵攒败货贝贞负贡财责贤贩贪贫贯贱贴贵贷贸费贺贼贾赁资赋赌赏赐赔赖赚赞赠赢"
+    "赵趋跃践跄踪蹑轧轨轩软轰轻较辆辈辉辐辖辗辙辞辽迁违逊递逻遗邓邮邻郑酝释钉钊钓钟钥钦钩钮钳钻铃铝铭铸铺"
+    "链销锅锋锐错锡锦键锯镇镜镖门闪闭闯闲闷闻阀阁阅阔队阶阳阴阵陆陈险随隐难雾韦韩顶顷项顺须顽顾顿颁颂预领"
+    "颇颈频颖颗题颜额颠风飘飞饥饭饮饰饱饲饼馆驱驰驳驶驻驼驾骂骄验骑骗骤髅鱼鲁鲜鸟鸡鸣鸦鸭鸿鹅鹏鹤鹰麦齐齿"
+    "龄龙龟两"
 )
 
 
@@ -158,7 +185,10 @@ def check_script_purity(text, expect):
 # For local_classify: the reply must BE one of the offered labels, not a sentence
 # mentioning one. "This is a feature request, I think." is a failure to follow the
 # format even though the right label is in there.
-_TRAILING_PUNCT = "  \t\r\n.。!！?？,，、:：;；\"'“”‘’`*_"
+# Includes the CJK bracket families: a Chinese-language model quoting its label as
+# 「feature」 was failing a check that exists to see past exactly that.
+_TRAILING_PUNCT = "  \t\r\n\u3000.。!！?？,，、:：;；\"'“”‘’`*_~"
+_TRAILING_PUNCT += "「」『』（）()〔〕[]【】《》〈〉{}"
 
 
 def check_category_member(text, expect):
@@ -179,7 +209,27 @@ def check_category_member(text, expect):
     }
 
 
+# ── non_empty ────────────────────────────────────────────────────────────────────
+# The single most obvious delegation failure — the model returned nothing — used to
+# score all-green: sentence_count("") is 0 and 0 <= any ceiling, no_preamble finds no
+# opener, script_purity finds no offenders. A harness whose stated purpose is to prevent
+# "plausible rows, nothing actually asserted" was producing the purest instance of it.
+#
+# rpc.py runs this on EVERY case regardless of what `expect` says, so a case with an
+# empty or missing `expect` can no longer be vacuously green either.
+def check_non_empty(text, expect):
+    stripped = (text or "").strip()   # str.strip() covers U+3000 and friends
+    return {
+        "ok": bool(stripped),
+        "observed": len(stripped),
+        "expected": {"min_chars": 1},
+        "detail": "empty or whitespace-only reply" if not stripped
+                  else f"{len(stripped)} non-whitespace-bounded character(s)",
+    }
+
+
 CHECKS = {
+    "non_empty": check_non_empty,
     "sentence_count": check_sentence_count,
     "no_preamble": check_no_preamble,
     "script_purity": check_script_purity,
@@ -223,7 +273,13 @@ def main(argv=None):
             results = [run_one(name, text, exp) for name, exp in spec.items()]
             print(
                 json.dumps(
-                    {"checks": results, "all_ok": all(r["ok"] for r in results)},
+                    # NOT `all_ok`. Every document here says an all-green mechanical run
+                    # is not a statement that the model was good, and then the only
+                    # boolean in the row was called `all_ok` — the literal reading those
+                    # documents forbid, and the one any downstream pass-rate would take.
+                    # By this repo's own argument (a rule telling an agent not to walk a
+                    # path is far weaker than removing the path), the name had to change.
+                    {"checks": results, "mechanical_ok": all(r["ok"] for r in results)},
                     ensure_ascii=False,
                 )
             )
