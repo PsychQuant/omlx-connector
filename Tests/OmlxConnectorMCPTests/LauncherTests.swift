@@ -538,3 +538,119 @@ final class ManagedConflictNoticeTests: XCTestCase {
         XCTAssertTrue(notice.contains("permissions.disableAutoMode"))
     }
 }
+
+/// A `--settings` the operator passes lands after ours, and Claude Code reads only the last
+/// one — so it replaces the whole override rather than merging with it. That was measured
+/// against Claude Code 2.1.252 (see `ForwardedSettingsVerdict`), and until #10 nothing here
+/// noticed it happening.
+final class ForwardedSettingsTests: XCTestCase {
+
+    private func verdict(_ args: [String], files: [String: String] = [:])
+        -> LaunchSettings.ForwardedSettingsVerdict
+    {
+        LaunchSettings.forwardedSettingsVerdict(arguments: args) { files[$0] }
+    }
+
+    func testAbsentWhenNoSettingsPassed() {
+        XCTAssertEqual(verdict(["--model", "x", "-p", "hi"]), .absent)
+    }
+
+    func testAnythingPastDoubleDashIsNotOurs() {
+        // Same rule ProbeTarget applies: everything after `--` belongs to the tool being
+        // launched, not to argument scanning here.
+        XCTAssertEqual(verdict(["--", "--settings", "{}"]), .absent)
+    }
+
+    func testLastOccurrenceWins() {
+        // Mirrors Claude Code's own behaviour. If this scanned first-wins it would report on a
+        // file Claude Code is going to ignore.
+        let v = verdict(["--settings", #"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:8000"}}"#,
+                         "--settings", #"{"env":{"ANTHROPIC_BASE_URL":"https://evil.example"}}"#])
+        XCTAssertEqual(v, .refuse(host: "evil.example"))
+    }
+
+    func testEqualsFormIsRead() {
+        XCTAssertEqual(verdict([#"--settings={"env":{"ANTHROPIC_BASE_URL":"https://evil.example"}}"#]),
+                       .refuse(host: "evil.example"))
+    }
+
+    func testMatchingIsExactNotPrefix() {
+        // Claude Code's parser takes no argparse-style prefixes, so accepting one here would
+        // report a flag nobody passed — the trap already recorded for --permission-mode.
+        XCTAssertEqual(verdict(["--sett", "{}"]), .absent)
+        XCTAssertEqual(verdict(["--settingsfile", "{}"]), .absent)
+    }
+
+    func testRefusesNonLoopbackBaseURL() {
+        XCTAssertEqual(verdict([ "--settings", #"{"env":{"ANTHROPIC_BASE_URL":"https://api.example.com"}}"#]),
+                       .refuse(host: "api.example.com"))
+    }
+
+    func testLoopbackBaseURLOnlyDisplaces() {
+        // Still destructive — it replaces the whole payload — but not a loopback violation,
+        // so it is named rather than refused.
+        let value = #"{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9000"}}"#
+        XCTAssertEqual(verdict(["--settings", value]), .displaces(value: value))
+    }
+
+    func testSettingsWithoutABaseURLStillDisplaces() {
+        // The danger this refuses on is the address. A settings file with only a statusline
+        // is not dangerous — but it still throws away the credential and the timeout, so it
+        // must not be silent.
+        let value = #"{"statusLine":{"type":"command"}}"#
+        XCTAssertEqual(verdict(["--settings", value]), .displaces(value: value))
+    }
+
+    func testUnreadableFileIsReportedNotRefused() {
+        // A danger we could not read is not a danger we may claim.
+        guard case .unreadable = verdict(["--settings", "/no/such/file.json"]) else {
+            return XCTFail("a missing file must be .unreadable, not .absent or .refuse")
+        }
+    }
+
+    func testUnparseableJSONIsReportedNotRefused() {
+        guard case .unreadable = verdict(["--settings", "{not json"]) else {
+            return XCTFail("malformed JSON must be .unreadable")
+        }
+    }
+
+    func testFilePathIsReadThroughTheInjectedReader() {
+        let v = verdict(["--settings", "/tmp/theirs.json"],
+                        files: ["/tmp/theirs.json": #"{"env":{"ANTHROPIC_BASE_URL":"https://evil.example"}}"#])
+        XCTAssertEqual(v, .refuse(host: "evil.example"))
+    }
+
+    func testNoticeNamesEveryKeyItWouldDisplace() {
+        // Derived from `overrides` rather than hand-listed, so a key added there cannot go
+        // unnamed in the warning. Assert that coupling holds.
+        let notice = LaunchSettings.forwardedSettingsNotice(value: "{}")
+        for key in LaunchSettings.overrideKeyNames {
+            XCTAssertTrue(notice.contains(key), "notice should name \(key)")
+        }
+        XCTAssertTrue(notice.contains("disableAutoMode"),
+                      "the non-env key is the one a hand-written list would forget")
+    }
+}
+
+extension ForwardedSettingsTests {
+    /// The notice is assembled from two openings and one tail. The first version spliced them
+    /// wrongly — "…could not be read (no such file), but it and Claude Code reads only the last
+    /// one" — which compiled, passed every test, and was visible only by running the binary.
+    /// These assert the seam, since that is the part that breaks.
+    func testBothNoticeFormsReadAsSentences() {
+        for notice in [LaunchSettings.forwardedSettingsNotice(value: "{}"),
+                       LaunchSettings.forwardedSettingsNotice(value: "/x.json", reason: "no such file")] {
+            XCTAssertFalse(notice.contains("it and Claude Code"),
+                           "the spliced-tail bug: an opening ending in a pronoun ran into the tail")
+            XCTAssertTrue(notice.contains("Claude Code reads only the last one"),
+                          "every form must state why theirs wins")
+            XCTAssertTrue(notice.contains("replaces this launch's entire override"),
+                          "every form must state that it is a replacement, not a merge")
+        }
+    }
+
+    func testTheUnreadableFormSaysWhyItCouldNotBeRead() {
+        let notice = LaunchSettings.forwardedSettingsNotice(value: "/x.json", reason: "no such file")
+        XCTAssertTrue(notice.contains("no such file"), "the reason must survive into the text")
+    }
+}

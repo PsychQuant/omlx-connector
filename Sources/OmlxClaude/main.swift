@@ -198,6 +198,22 @@ do {
     fail(error)
 }
 
+// A --settings the operator passed lands AFTER ours, and Claude Code reads only the last
+// one — measured, not assumed (see ForwardedSettingsVerdict). So theirs does not merge with
+// ours, it replaces it whole. Refuse when it carries a non-loopback address, because the
+// loopback check above would then have verified an address the session never uses; name it
+// otherwise, because silently losing the override is what #10 was filed about.
+switch LaunchSettings.forwardedSettingsVerdict(arguments: forwarded) {
+case .absent:
+    break
+case .refuse(let host):
+    fail(LaunchError.forwardedSettingsRefused(host: host))
+case .displaces(let value):
+    note("\(LauncherIdentity.name): \(LaunchSettings.forwardedSettingsNotice(value: value))")
+case .unreadable(let value, let reason):
+    note("\(LauncherIdentity.name): \(LaunchSettings.forwardedSettingsNotice(value: value, reason: reason))")
+}
+
 // exec, not spawn: this process should disappear, leaving Claude Code owning the
 // terminal, the signals and the exit status.
 let argv = ["omlx", "launch", "claude", "--settings", settings] + forwarded

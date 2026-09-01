@@ -156,6 +156,127 @@ enum LaunchSettings {
         return requested
     }
 
+    /// What a `--settings` in the forwarded arguments does to ours.
+    ///
+    /// **Last one wins, and the earlier is discarded rather than merged.** Measured against
+    /// Claude Code 2.1.252 with a nonexistent path as a marker for "this was consumed":
+    /// `--settings '{}' --settings /nope.json` errors, `--settings /nope.json --settings '{}'`
+    /// does not. Since `main.swift` puts ours first and appends the operator's argv after,
+    /// theirs replaces the **entire** payload — base URL, credential, timeout, `disableAutoMode`,
+    /// all of it. That is not a merge conflict; it is a total substitution, and until #10
+    /// nothing detected it.
+    ///
+    /// The consequence is why this refuses rather than only reporting: the loopback gate would
+    /// have verified an address the session then does not use.
+    enum ForwardedSettingsVerdict: Equatable {
+        /// The operator passed none. Ours stands.
+        case absent
+        /// Theirs replaces ours, and nothing in it fails the loopback policy.
+        case displaces(value: String)
+        /// Theirs carries a non-loopback `ANTHROPIC_BASE_URL`.
+        case refuse(host: String)
+        /// Theirs could not be read or parsed. Reported, never refused — a danger we could not
+        /// read is not a danger we may claim.
+        case unreadable(value: String, reason: String)
+    }
+
+    /// The last `--settings` value in the forwarded arguments, or nil.
+    ///
+    /// Matching is **exact**, for the reason `deliberateAutoModeRequested` already records:
+    /// `--settings` belongs to Claude Code, whose parser takes no argparse-style prefixes, so
+    /// accepting `--sett` would report a flag nobody passed. Stops at `--`; last occurrence wins,
+    /// which mirrors what Claude Code itself does.
+    static func forwardedSettingsValue(arguments: [String]) -> String? {
+        var found: String?
+        var index = 0
+        while index < arguments.count {
+            let argument = arguments[index]
+            if argument == "--" { break }
+
+            if argument == "--settings", index + 1 < arguments.count {
+                found = arguments[index + 1]
+                index += 1
+            } else if argument.hasPrefix("--settings=") {
+                found = String(argument.dropFirst("--settings=".count))
+            }
+            index += 1
+        }
+        return found
+    }
+
+    /// Judge a forwarded `--settings`. `readFile` is injected so this stays testable without
+    /// touching the filesystem — the decision is the thing worth testing, not the I/O.
+    static func forwardedSettingsVerdict(
+        arguments: [String],
+        readFile: (String) -> String? = { try? String(contentsOfFile: $0, encoding: .utf8) }
+    ) -> ForwardedSettingsVerdict {
+        guard let value = forwardedSettingsValue(arguments: arguments) else { return .absent }
+
+        // `--settings` takes either a literal JSON object or a path to one. Distinguish the
+        // same way Claude Code's error message implies: a leading `{` is the literal form.
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text: String
+        if trimmed.hasPrefix("{") {
+            text = trimmed
+        } else if let contents = readFile(value) {
+            text = contents
+        } else {
+            return .unreadable(value: value, reason: "no such file, or it could not be read")
+        }
+
+        guard let data = text.data(using: .utf8),
+            let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return .unreadable(value: value, reason: "not a JSON object")
+        }
+
+        guard let env = parsed["env"] as? [String: Any],
+            let raw = env["ANTHROPIC_BASE_URL"] as? String,
+            let host = URLComponents(string: raw)?.host
+        else { return .displaces(value: value) }
+
+        let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return LoopbackPolicy.classify(bare) == .loopback
+            ? .displaces(value: value)
+            : .refuse(host: bare)
+    }
+
+    /// What to say about a forwarded `--settings` that displaces ours. Text lives here rather
+    /// than in `main.swift` for the reason CLAUDE.md records: a call site that only builds a
+    /// string cannot be tested, and message-shaped bugs are the ones this repo keeps producing.
+    static func forwardedSettingsNotice(value: String, reason: String? = nil) -> String {
+        // Two complete sentences rather than a shared tail with two openings. The shared-tail
+        // version produced "…could not be read (no such file), but it and Claude Code reads
+        // only the last one" — grammatical nonsense that compiled, passed every test, and was
+        // only visible by running the binary. Structuring it so the halves cannot be spliced
+        // wrongly is cheaper than remembering to re-read both.
+        let lead: String
+        if let reason {
+            lead = """
+                a --settings you passed could not be read (\(reason)). It still lands after this \
+                launch's own, and Claude Code reads only the last one.
+                """
+        } else {
+            lead = """
+                a --settings you passed lands after this launch's own, and Claude Code reads only \
+                the last one.
+                """
+        }
+        return """
+            \(lead) It therefore replaces this launch's entire override, not just the keys it \
+            names. Everything goes with it: \(overrideKeyNames.joined(separator: ", ")). If you \
+            want both, merge them into the file you pass. Value: \(value)
+            """
+    }
+
+    /// The keys a forwarded `--settings` would displace. Derived from the real payload rather
+    /// than hand-listed, so a key added to `overrides` cannot go unnamed here.
+    static var overrideKeyNames: [String] {
+        var names = Array(overrides(baseURL: "http://127.0.0.1:8000", authToken: .unknown).keys)
+        names.append("disableAutoMode")
+        return names.sorted()
+    }
+
     /// Everything the `--settings` argument asserts, `env` being one member of it.
     ///
     /// This used to *be* the `env` dictionary, and that shape was the defect behind #11:
@@ -361,6 +482,7 @@ enum LaunchError: LocalizedError, Equatable {
     case nonLoopbackRefused(host: String, url: String)
     case ambiguousAddress(host: String)
     case managedBaseURLRefused(host: String)
+    case forwardedSettingsRefused(host: String)
     case serverUnreachable(url: String)
     case serverRequiresAuth(url: String)
     case credentialRejected(url: String)
@@ -410,6 +532,17 @@ enum LaunchError: LocalizedError, Equatable {
                 so it declines rather than launching and warning.
                 Ask whoever manages this Mac to remove that key, or use plain `claude` if you
                 intend to talk to the managed endpoint.
+                """
+        case .forwardedSettingsRefused(let host):
+            return """
+                a --settings you passed sets ANTHROPIC_BASE_URL to '\(host)', which is not \
+                loopback. Claude Code reads only the LAST --settings, and yours comes after \
+                this launch's — so it replaces the whole override and the session would talk \
+                to that host, while the loopback check this command just ran verified an \
+                address the session never uses. Refusing rather than warning: content leaving \
+                the machine is the one thing this command exists to prevent. Remove the \
+                ANTHROPIC_BASE_URL from your settings, or set OMLX_ALLOW_REMOTE=1 and point \
+                this launch at that host yourself so the check applies to it.
                 """
         case .serverUnreachable(let url):
             return """
