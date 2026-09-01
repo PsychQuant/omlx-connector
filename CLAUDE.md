@@ -391,6 +391,23 @@ It is **not** part of `make test`, and the separation is structural rather than 
 subdirectory cannot join the hermetic run by accident. Making that glob recursive would
 silently undo it and give `make test` a live-server dependency.
 
+**Nor whether the delegated work is any good.** Every test in `Tests/` uses `StubClient`;
+not one sends anything to a real model. `make eval` (`scripts/eval/`, issue #1) drives the
+shipped binary over JSON-RPC against a live oMLX server and writes one JSONL row per
+(model × case) — deliberately outside `make test`, since it needs a model loaded and takes
+seconds to minutes per case, and outside both existing globs so it cannot join either by
+accident. The *checks* it applies are pure text functions and are unit-tested in the hermetic
+suite (`scripts/tests/eval-checks.test.sh`), so they stay verified where no model exists.
+
+The trap it is built against is the one every eval harness falls into: plausible rows, nothing
+actually asserted. Hence the mutation proof on each check, and hence the first cross-size run's
+result being recorded in `scripts/eval/README.md` rather than summarised as a pass — five
+summarize cases across three model sizes came back **all-green mechanically** while the 0.6B
+dropped a third of the load-bearing items and inverted a word. Length and preamble compliance
+are the easy half; coverage and faithfulness are handed to a human on purpose, because an
+LLM-as-judge only swaps one unverified judgement for another. **An all-green eval row is not a
+statement that the model was good.**
+
 Having a runner is not the same as having a trigger. `make test-headed` is reached only by
 the pre-release checklist above, deliberately — a person following it, not automation. Issue #18
 settled that: the alternative was wiring it into `make release-signed`, which would make signing

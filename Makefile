@@ -4,7 +4,7 @@ BINARY_NAME := OmlxConnectorMCP
 # language mode only if an upstream dependency trips strict concurrency.
 FALLBACK_FLAGS := $(shell swift build 2>&1 | grep -q "SendingRisksDataRace" && echo "-Xswiftc -swift-version -Xswiftc 5")
 
-.PHONY: build release release-signed verify-developer-id install install-omlx-claude install-signed clean test test-swift test-shell ping
+.PHONY: build release release-signed verify-developer-id install install-omlx-claude install-signed clean test test-swift test-shell test-headed eval ping
 
 build:
 	swift build $(FALLBACK_FLAGS)
@@ -34,6 +34,17 @@ test-shell:
 ## Set REQUIRE_FULL_SUITE=1 to make a skip (missing tmux / no server) a failure.
 test-headed:
 	@for suite in scripts/tests/headed/*.test.sh; do bash "$$suite" || exit 1; done
+
+## Delegation-quality evaluation (issue #1). Drives the shipped binary over JSON-RPC
+## against a live oMLX server and writes one JSONL row per case. NOT part of `test`:
+## it needs a model loaded and takes seconds to minutes per case. It also lives outside
+## both test globs (scripts/eval/, not scripts/tests/), so it cannot join either by
+## accident. The checks it applies ARE unit-tested in the hermetic suite —
+## scripts/tests/eval-checks.test.sh — so they stay verified where no model exists.
+##   make eval MODELS="--model a --model b"   compares across sizes; that comparison is
+##   the point, per the issue: the interesting output is where the cliff is.
+eval: build
+	./scripts/eval/run.sh $(MODELS)
 
 ## Reachability check against the configured oMLX server.
 ping: build

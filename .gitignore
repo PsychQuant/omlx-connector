@@ -31,3 +31,12 @@ mcpb/*.mcpb.sha256
 # To drop launch.json instead: delete the `!` line and `git rm --cached .vscode/launch.json`. (#4)
 .vscode/*
 !.vscode/launch.json
+
+# Measurement output from `make eval`. A committed measurement goes stale silently,
+# and a stale one is worse than none — regenerate it instead (see scripts/eval/README.md).
+scripts/eval/results.jsonl
+
+# Bytecode from running check.py / rpc.py. `git add -A scripts/eval` swept one of these
+# into the first commit of the harness; it is build output, not source.
+__pycache__/
+*.pyc
