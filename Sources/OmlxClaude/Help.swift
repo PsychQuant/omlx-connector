@@ -95,6 +95,15 @@ enum LauncherIdentity {
         cannot be overridden, so on a managed Mac the address checked above may not be
         the address the session uses.
 
+        IF YOU PASS YOUR OWN --settings
+        Claude Code reads only the LAST one and discards the rest — it does not merge
+        them. Yours is forwarded after this launch's, so yours replaces the whole
+        override, not just the keys it names: the base URL, the credential, the
+        timeout, disableAutoMode, all of it. This launch says so when it sees one, and
+        refuses outright if yours sets a non-loopback ANTHROPIC_BASE_URL — otherwise
+        the loopback check would have verified an address the session never uses. To
+        keep both, merge this launch's keys into the file you pass. See issue #10.
+
         ON CLAUDE_CODE_DISABLE_1M_CONTEXT
         This launch sets it, and you should not read that as bounding your context.
         Claude Code honours it only for model ids it recognizes, and an oMLX-served
