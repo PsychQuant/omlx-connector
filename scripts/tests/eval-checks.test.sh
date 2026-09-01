@@ -42,7 +42,16 @@ SKIP=0
 # shared between concurrent runs and between repos, and a single leftover turned this
 # suite from 89/0 into 82/7. `mktemp -d` has the X's last, so it is genuinely unique.
 SUITE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/eval-checks.XXXXXX")
-trap 'rm -rf "$SUITE_TMP"' EXIT
+# FAKE_PID is registered here rather than only killed inline: round 3 sent SIGTERM to the
+# suite mid-run and `fake-omlx.py` — which calls serve_forever() with no timeout — was still
+# listening on loopback minutes later and had to be killed by hand. Any exit between spawn
+# and the inline kill leaked it permanently.
+FAKE_PID=""
+cleanup_suite() {
+    [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
+    rm -rf "$SUITE_TMP"
+}
+trap cleanup_suite EXIT
 
 skip() { echo "  SKIP — $1"; SKIP=$((SKIP + 1)); }
 
@@ -202,6 +211,12 @@ verdict "！ and ？ together are three sentences, not one" ok sentence_count '{
     '這樣可以嗎？我們決定延後！請看附件。'
 verdict "… terminates a sentence" not-ok sentence_count '{"max":1}' \
     '他猶豫了…最後還是同意了。'
+# ASCII ! and ? were unpinned in round 3: every fixture used a fullwidth form or a RUN
+# (`Really?!`), and a run is collapsed, so deleting either from _TERMINATORS survived.
+verdict "ASCII ! terminates a sentence" not-ok sentence_count '{"max":1}' \
+    'The deadline moved! The vote carried.'
+verdict "ASCII ? terminates a sentence" not-ok sentence_count '{"max":1}' \
+    'Did the deadline move? It did.'
 
 # Kills stripping the whitespace out of _CLOSERS. A reply ending in a newline is the
 # commonest model output shape there is, and no fixture had one: every tail-rule fixture
@@ -309,7 +324,17 @@ corpus ok "no pattern flags ordinary content (false-positive corpus)" \
     'Three items were deferred: budget, venue, and the vote.' \
     'The deadline moved to March. Here is the rest of the detail.' \
     '總結報告會在週五送出。' \
-    'Sure enough, the deadline slipped again.'
+    'Sure enough, the deadline slipped again.' \
+    '我會整理房間，然後出門。' \
+    '我已經整理好行李了。' \
+    '我來回答你的第一個問題。' \
+    '我將整理這批資料的索引。' \
+    'I have attached the figures below.' \
+    'I will meet you below the bridge at noon.' \
+    'I have three concerns, as follows.' \
+    'Of course, the deadline had already slipped.' \
+    'Let me know if the deadline changes.' \
+    'This is the result of an expired TLS certificate: renewal is automated, but the cron entry had been removed.'
 
 corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
     'Here is a summary of the text: the deadline moved.' \
@@ -435,17 +460,126 @@ fi
 # ...and the probe list must keep covering every line, or the guard above weakens silently
 # as the table is re-wrapped. This pairs the corpus to the table instead of trusting that
 # they stayed in sync — the sync is exactly what broke while writing this round.
+# ROUND 3 FOUND THIS GUARD FAILING OPEN ON EXACTLY WHAT IT EXISTS TO DETECT. Its stated
+# purpose was "the probe list must keep covering every line, or the guard weakens silently
+# as the table is re-wrapped" — and re-wrapping the table to a single-line `set("…")` broke
+# the regex, which raised AttributeError, which produced empty stdout, which the `-z` test
+# read as success. Empty output must never be the pass signal for a parser that can crash.
 uncovered=$(python3 -c '
 import re, sys
 src = open(sys.argv[1], encoding="utf-8").read()
-lines = re.findall(r"\"([^\"]*)\"", re.search(r"_SIMPLIFIED_ONLY = set\(\n((?:.*\n)*?)\)\n", src).group(1))
+m = re.search(r"_SIMPLIFIED_ONLY = set\(\s*((?:.|\n)*?)\)\n", src)
+if not m:
+    print("PARSE-FAILED"); raise SystemExit
+lines = re.findall(r"\"([^\"]*)\"", m.group(1))
+if not lines:
+    print("PARSE-FAILED"); raise SystemExit
 probes = set(sys.argv[2])
-print(",".join(str(i) for i, L in enumerate(lines) if not (set(L) & probes)))' "$CHECK" "$probes" 2>/dev/null)
-if [ -z "$uncovered" ]; then
+missing = [str(i) for i, L in enumerate(lines) if not (set(L) & probes)]
+print("OK" if not missing else ",".join(missing))' "$CHECK" "$probes" 2>&1)
+if [ "$uncovered" = "OK" ]; then
     echo "  ok   — every line of _SIMPLIFIED_ONLY has a probe (deleting any line goes red)"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL — lines with no probe character: $uncovered (deleting them would be invisible)"
+    echo "  FAIL — probe coverage check said: $uncovered"
+    echo "         (PARSE-FAILED means the table was re-wrapped and this guard could not read it —"
+    echo "          which is the exact edit it exists to catch, so it is a failure, not a pass.)"
+    FAIL=$((FAIL + 1))
+fi
+
+# THE ADD DIRECTION. Everything above pins DELETION — probes and corpora all prove that
+# removing something goes red. Adding is invisible, and adding is the direction that
+# produces false positives, which README calls the more damaging one. Round 3 measured it:
+# appending an ordinary word to the Chinese meta list, or 繁體字 to the Simplified set,
+# produced false positives on clean text with the suite still fully green.
+#
+# So: a body of clean Traditional prose that no member of _SIMPLIFIED_ONLY may appear in.
+# That is a property over the table rather than a list of sentences — adding any character
+# that occurs in ordinary Traditional writing fails here regardless of which line it went on.
+CLEAN_TRADITIONAL='這份報告的結論需要重新檢視。團隊同意把投稿期限從三月十五日延到四月五日，因為前導資料延遲送達。
+第二位研究助理的經費核准了申請金額的六成，兩位成員反對取消控制組，這項決定延到下週再議。
+會議紀錄用紫色標記三項待決事項，專案代號是鳳凰計畫。他覺得這樣做並不划算，那一年經費拮据。
+網路連線在九點十四分中斷，因為憑證過期；更新原本是自動的，但排程項目在一次無關的清理中被移除了。
+我會在下週提出報告，並且說明為什麼這個變更值得做。謝謝大家的協助與體諒。
+繁體字的書寫習慣、標點使用與語氣，都應該保持一致。
+我會處理這件事，並在完成後通知你。我已經說明過原因了，也回答了所有問題。
+我來自台北，我將整理這批資料的索引，之後會把結果寄給你。'
+
+# HONEST LIMIT, because round 3 caught the previous version of this claim overreaching.
+# These two checks are CORPORA, so they close the shapes the prose above contains, not the
+# property "no pattern ever flags ordinary content". Injecting a meta-list entry whose false
+# positives happen to fall outside this text still passes — measured, not assumed. Widen the
+# prose when you touch either table; do not read a green run here as proof the class is shut.
+bad=$(python3 - "$CHECK" "$CLEAN_TRADITIONAL" <<'INNER'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("".join(sorted({c for c in sys.argv[2] if c in m._SIMPLIFIED_ONLY})))
+INNER
+)
+if [ -z "$bad" ]; then
+    echo "  ok   — no member of _SIMPLIFIED_ONLY occurs in clean Traditional prose (add direction)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — these members of _SIMPLIFIED_ONLY occur in ordinary Traditional text: $bad"
+    FAIL=$((FAIL + 1))
+fi
+
+# The same direction for the preamble patterns: no pattern may match the clean corpus.
+# `corpus ok` above already does this, but only for the strings it enumerates; this checks
+# every SENTENCE of the prose above, which is a wider and independently-maintained body.
+badp=$(python3 - "$CHECK" "$CLEAN_TRADITIONAL" <<'INNER'
+import importlib.util, re, sys
+spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+hits = []
+for line in sys.argv[2].splitlines():
+    for sentence in re.split(r"[。！？\n]", line):
+        sentence = sentence.strip()
+        if sentence and not m.check_no_preamble(sentence, {})["ok"]:
+            hits.append(sentence[:24])
+print(" | ".join(hits))
+INNER
+)
+if [ -z "$badp" ]; then
+    echo "  ok   — no preamble pattern matches clean Traditional prose (add direction)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — preamble patterns flag ordinary Traditional sentences: $badp"
+    FAIL=$((FAIL + 1))
+fi
+
+# PER-CHARACTER membership, not per-line. Round 3's probes are one per line, so deleting a
+# single character was invisible — including 么, the character whose removal was round 2's
+# headline regression (什么 passing silently).
+missing=$(python3 - "$CHECK" <<'INNER'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+must = "么听圣坏复宁庄怀惊扑扰网胜赶适吨这说时实发关应结国学对会门长问风飞鱼鸟龙齐题预领"
+print("".join(c for c in must if c not in m._SIMPLIFIED_ONLY))
+INNER
+)
+if [ -z "$missing" ]; then
+    echo "  ok   — every named high-frequency Simplified marker is still in the set"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — these Simplified markers were removed from the set: $missing"
+    FAIL=$((FAIL + 1))
+fi
+# ...and the four that must stay OUT, so round 1's false positives cannot return.
+back=$(python3 - "$CHECK" <<'INNER'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print("".join(c for c in "紫凰划据" if c in m._SIMPLIFIED_ONLY))
+INNER
+)
+if [ -z "$back" ]; then
+    echo "  ok   — the four Traditional characters round 1 wrongly flagged are still out"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — these Traditional characters are back in the set: $back"
     FAIL=$((FAIL + 1))
 fi
 
@@ -829,6 +963,46 @@ else
     # (the measurement did not happen). Distinguishing those two is the contract.
     runsh_case "a fully-answered run exits 2 (findings), not 1" 2 silent 99
 
+    # A model whose session never starts must not vanish. Round 3 reproduced a two-model
+    # run in which the first model failed `initialize`, and the run published five rows
+    # from the second, printed "Every mechanical check passed" and exited 0 — one side of
+    # a two-sided comparison, in the file README calls a measurement record, with nothing
+    # in it saying a model is missing.
+    #
+    # The class fix is that run.sh now knows how many rows a run OWES (models × cases).
+    # That is the root README already named — "nothing in it says how many rows it should
+    # have" — and it closes handshake failure, case-file evaporation and transport failure
+    # with one number instead of one branch each.
+    MM="$SUITE_TMP/twomodel-$RANDOM.jsonl"
+    OMLX_EVAL_BINARY="$STUB" STUB_MODE=nohandshake STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+        STUB_MARKER="$SUITE_TMP/handshake-$RANDOM.marker" \
+        "$RUNSH" --model first --model second --out "$MM" \
+        --cases "$REPO/scripts/eval/cases/summarize.json" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" = "1" ]; then
+        echo "  ok   — a model whose handshake fails makes the run incomplete, not silent"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL — two-model run with a dead first model exited $rc, wanted 1"
+        FAIL=$((FAIL + 1))
+    fi
+
+    # An unreadable case file must not evaporate either. With the default cases/*.json a
+    # malformed classify.json silently dropped exactly the requirements round 3 existed to
+    # satisfy, and results.jsonl was overwritten as if complete.
+    printf 'not json at all' > "$SUITE_TMP/broken.json"
+    OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+        "$RUNSH" --model stub --out "$SUITE_TMP/broken-out.jsonl" \
+        --cases "$REPO/scripts/eval/cases/summarize.json" --cases "$SUITE_TMP/broken.json" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" = "1" ]; then
+        echo "  ok   — an unreadable case file aborts rather than silently shrinking the run"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL — run with a malformed case file exited $rc, wanted 1"
+        FAIL=$((FAIL + 1))
+    fi
+
     # The destination must only ever hold a COMPLETE run. Round 2: an incomplete run wiped
     # results.jsonl, and the file is gitignored so nothing could be recovered — while a
     # truncated JSONL is indistinguishable from a complete one, since no field says how
@@ -895,6 +1069,58 @@ print(rows[0]["model"] if rows else "NO ROWS")' "$SUITE_TMP/served.jsonl" 2>/dev
     fi
 fi
 
+# THE SHIPPED CASE FILES ARE A CALL SITE, AND ROUND 3 LEFT IT UNTESTED. Deleting
+# `expect_row` from classify-none-of-the-above left the suite BYTE-IDENTICAL at 112/0, and
+# deleting `label_is` from all three classify cases did too — the two mechanisms added to
+# satisfy requirements 6a and 6b were tested only against fixtures the suite builds itself.
+# Same shape as round 2's Swift call site, one level down.
+shipped=$(python3 - "$REPO/scripts/eval/cases/classify.json" <<'INNER'
+import json, sys
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+problems = []
+accuracy = [c["id"] for c in doc["cases"]
+            if "category" in (c.get("expect_row") or {}) or "label_is" in (c.get("expect", {}))]
+matched  = [c["id"] for c in doc["cases"] if "matched" in (c.get("expect_row") or {})]
+if len(accuracy) < 2:
+    problems.append(f"requirement 6a: only {len(accuracy)} case(s) assert accuracy")
+if not matched:
+    problems.append("requirement 6b: no case asserts on `matched`")
+for c in doc["cases"]:
+    if not c.get("expect") and not c.get("expect_row"):
+        problems.append(f"{c['id']}: no mechanical expectation at all")
+print("; ".join(problems))
+INNER
+)
+if [ -z "$shipped" ]; then
+    echo "  ok   — the shipped classify cases carry the mechanisms 6a and 6b are met by"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — shipped classify.json no longer covers what it claims: $shipped"
+    FAIL=$((FAIL + 1))
+fi
+
+# ...and expect_row's field names need the guard `expect` already has.
+badrow=$(python3 - "$RPC" "$REPO/scripts/eval/cases" <<'INNER'
+import glob, importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("rpc", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+bad = []
+for path in sorted(glob.glob(os.path.join(sys.argv[2], "*.json"))):
+    for c in json.load(open(path, encoding="utf-8"))["cases"]:
+        for k in (c.get("expect_row") or {}):
+            if k not in m.ROW_FIELDS:
+                bad.append(f"{os.path.basename(path)}:{c['id']}:{k}")
+print(",".join(bad))
+INNER
+)
+if [ -z "$badrow" ]; then
+    echo "  ok   — every expect_row field in every case file is a real payload field"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — unknown expect_row field(s): $badrow"
+    FAIL=$((FAIL + 1))
+fi
+
 # Every case file must name only checks that exist. A typo would otherwise surface as a
 # mid-run abort against a live model, minutes in.
 for cf in "$REPO"/scripts/eval/cases/*.json; do
@@ -916,8 +1142,27 @@ print(",".join(missing))' "$cf" "$REPO/scripts/eval" "$CHECK" 2>&1)
     fi
 done
 
+# THE ONE QUANTITY THAT CANNOT BE PUSHED FURTHER OUT.
+#
+# Round 3 found every guard in this file individually deletable with the suite still
+# exiting 0: the per-character probe loop, the coverage assertion, and both corpora. `make
+# test`'s `test-shell` reads only the exit status, so "112 passed" silently becoming "110
+# passed" is invisible — and this repo has already recorded one accident where an
+# interrupted mutation sweep blessed a shrunken baseline as correct.
+#
+# Every layer above this one can be guarded by another layer. This is where the recursion
+# stops: the suite counts itself. Adding or removing a case means updating this number ON
+# PURPOSE, which is the whole point.
+EXPECTED_CASES=122
 echo
 echo "  $PASS passed, $FAIL failed, $SKIP skipped"
+TOTAL=$((PASS + FAIL + SKIP))
+if [ "$TOTAL" -ne "$EXPECTED_CASES" ]; then
+    echo "  FAIL — suite ran $TOTAL case(s), expected $EXPECTED_CASES."
+    echo "         A guard was added or removed. If deliberate, update EXPECTED_CASES;"
+    echo "         if not, something deleted coverage and every remaining case still passed."
+    FAIL=$((FAIL + 1))
+fi
 if [ "$SKIP" -gt 0 ] && [ -n "${REQUIRE_FULL_SUITE:-}" ]; then
     echo "  REQUIRE_FULL_SUITE set — a skip is a failure"
     exit 1

@@ -91,7 +91,7 @@ shasum -a 256 ~/.claude/settings.json ~/.claude.json    # before, and again afte
 **Not** in `make test`. The separation is structural rather than disciplinary: `test-shell`
 globs `scripts/tests/*.test.sh`, which is **not recursive**, so a suite in the subdirectory
 cannot join the hermetic run by accident. Nobody has to remember a flag. Making that glob
-recursive would silently undo it, which is why the Makefile carries a comment saying so. That suite is deliberately hermetic — no network, no oMLX required —
+recursive would silently undo it, which is why the Makefile carries a comment saying so. That suite is deliberately self-contained — no oMLX, no off-box traffic (it does bind an ephemeral loopback port to exercise the real client) —
 and a headed test needs a live server. Folding one into the other would trade a fast, always-
 runnable suite for a slow, environment-dependent one, and the hermetic property is worth more
 than the convenience of a single command.

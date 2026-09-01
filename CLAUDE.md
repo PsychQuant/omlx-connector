@@ -355,7 +355,12 @@ in the archive, so the second costs no extra round-trip.
 
 ## Testing notes
 
-The suite is fast and hermetic — no network, no oMLX required. `StubClient` fakes
+The suite is fast and self-contained: no oMLX, no off-box traffic, nothing to install. It is
+**not** literally network-free any more — `scripts/tests/stubs/fake-omlx.py` binds an
+ephemeral loopback port so the real client's response parsing can be exercised, which is the
+only way to test a call site rather than the function it calls. The socket is `127.0.0.1`
+only. Saying "hermetic — no network" after that change would be the message-shaped bug this
+file keeps producing. `StubClient` fakes
 the `OmlxClienting` protocol. When adding a tool, add it to `defineTools()` and to
 `executeToolCall`; `testEveryDeclaredToolDispatches` will catch the second if you
 forget it.
@@ -394,7 +399,7 @@ It is **not** part of `make test`, and the separation is structural rather than 
 subdirectory cannot join the hermetic run by accident. Making that glob recursive would
 silently undo it and give `make test` a live-server dependency.
 
-**Nor whether the delegated work is any good.** Not one of the 133 tests in `Tests/`
+**Nor whether the delegated work is any good.** Not one of the 136 tests in `Tests/`
 sends anything to a real model — `StubClient` fakes the client where one is needed at all,
 and most of the suite (launcher settings, loopback classification, version ordering) needs
 no client. An earlier draft of this paragraph said "every test uses `StubClient`", which is
@@ -416,8 +421,13 @@ the ceiling, `all()` → `any()`, deleting 11 of 13 preamble patterns — all st
 the fixtures came from the same mental model as the code. Round 2 pinned the **code paths** and
 declared the class closed. It was not: the same trap had moved onto the **constant tables**,
 where deleting any one line of the Simplified set, or shrinking it to exactly the floor the
-tests asserted, still ran green. Round 3 pinned the tables with per-character probes plus an
-assertion that every line still has one.
+tests asserted, still ran green. Round 3 pinned the tables with per-character
+probes — and left the ADD direction open, so appending an ordinary word to a meta list or an
+ordinary character to the Simplified set produced false positives with the suite fully green,
+in the direction the README itself calls the more damaging one. Round 4 added corpora for
+that direction, a per-character membership assertion, and the thing that finally stops the
+recursion: **the suite asserts its own case count**, because round 3 found every guard in it
+individually deletable at exit 0.
 
 **The pattern across all three is the same, and it is the point:** each round fixed the
 instances a reviewer named and left the class open one layer out. `當然|当然[，,、:：]` was fixed
@@ -429,9 +439,15 @@ still left every test green until a fake oMLX server exercised the real client. 
 "fix the property, not the file" section is not the same as obeying it, and this file is now
 three demonstrations of that.
 
+A fourth round found the class again, and the Devil's Advocate found the layer before the
+author did: `label_is` and `expect_row` were tested only against fixtures the suite builds
+for itself, so deleting them from the **shipped case files** left the suite byte-identical.
+Same shape as the Swift call site one round earlier. The shipped files are now checked too.
+
 **The sweep is still not part of `make test`** — it takes ~30 suite runs — so the claim remains
 about a point in time. When you change a check or a table, re-run it, and expect the class you
-thought you closed to have moved.
+thought you closed to have moved. Two guards here are **corpora**, which close the shapes they
+enumerate and not the property; that limit is written beside them rather than glossed.
 
 The results are recorded in `scripts/eval/README.md` rather than summarised as a pass, for the
 same reason. Five summarize cases across three model sizes came back **all-green mechanically**

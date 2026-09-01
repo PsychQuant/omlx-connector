@@ -15,6 +15,17 @@ if "--ping" in sys.argv:
 
 answer = int(os.environ.get("STUB_ANSWER_CALLS", "1"))
 mode = os.environ.get("STUB_MODE", "silent")
+
+# `nohandshake` must fail only the FIRST invocation, or a two-model run loses both models
+# and the "nothing measured" gate fires for the wrong reason — the test would pass while
+# discriminating nothing. run.sh starts one process per model, so a marker file in the
+# scratch dir is what distinguishes them.
+if mode == "nohandshake":
+    marker = os.environ.get("STUB_MARKER", "")
+    if marker and not os.path.exists(marker):
+        open(marker, "w").close()   # first invocation: refuse to handshake
+    else:
+        mode = "silent"
 calls = 0
 for line in sys.stdin:
     line = line.strip()
@@ -23,6 +34,11 @@ for line in sys.stdin:
     try:
         msg = json.loads(line)
     except json.JSONDecodeError:
+        continue
+    if msg.get("method") == "initialize" and mode == "nohandshake":
+        # A model whose session never starts. Round 3: run.sh dropped it with a stderr
+        # line and zero rows, and the verdict — which reasons only about rows that exist —
+        # published a half-missing cross-size comparison at exit 0.
         continue
     if msg.get("method") == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],

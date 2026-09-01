@@ -35,13 +35,13 @@ CASE_FILES=()
 # could execute arbitrary commands. Demonstrated on macOS /bin/bash 3.2 in the round-1
 # verify. Validate before it goes anywhere near `$(( ))`.
 case "$TIMEOUT" in
-    ''|*[!0-9]*) echo "OMLX_EVAL_TIMEOUT must be a whole number of seconds, got: $TIMEOUT" >&2; exit 2 ;;
+    ''|*[!0-9]*) echo "OMLX_EVAL_TIMEOUT must be a whole number of seconds, got: $TIMEOUT" >&2; exit 64 ;;
 esac
-[ "$TIMEOUT" -gt 0 ] || { echo "OMLX_EVAL_TIMEOUT must be positive" >&2; exit 2; }
+[ "$TIMEOUT" -gt 0 ] || { echo "OMLX_EVAL_TIMEOUT must be positive" >&2; exit 64; }
 
 # A missing option value used to die with bash's raw "$2: unbound variable" under set -u,
 # while every other argument error here gets a named message.
-need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "$1 needs a value" >&2; exit 2; }; }
+need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "$1 needs a value" >&2; exit 64; }; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --model)  need "$@"; MODELS+=("$2"); shift 2 ;;
@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
             echo "  env: OMLX_BASE_URL (the server; same variable the MCP binary reads),"
             echo "       OMLX_EVAL_BINARY, OMLX_EVAL_TIMEOUT, OMLX_EVAL_OUT"
             exit 0 ;;
-        *) echo "unknown argument: $1" >&2; exit 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 64 ;;
     esac
 done
 
@@ -93,9 +93,51 @@ if ! PING=$("$BINARY" --ping 2>&1); then
     exit 1
 fi
 
+# HOW MANY ROWS THIS RUN OWES. Everything below depends on knowing this number, and not
+# knowing it is the root of every fail-open variant three verify rounds found: a tool error
+# that produced a row the guard misread, a transport failure that produced no row, a model
+# whose handshake failed, a case file that could not be parsed. Each was fixed as its own
+# branch and the next one appeared one layer out. README already named the root — "nothing
+# in it says how many rows it should have" — so the fix is to count.
+#
+# Case files are parsed HERE, before anything runs, so an unreadable or empty one aborts
+# instead of quietly shrinking the run. With the default `cases/*.json`, a malformed
+# classify.json used to drop exactly the two requirements it exists to cover, and publish.
+TOTAL_CASES=0
+for case_file in "${CASE_FILES[@]}"; do
+    if [ ! -f "$case_file" ]; then
+        echo "no such case file: $case_file" >&2; exit 1
+    fi
+    if ! n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file" 2>&1); then
+        echo "unreadable case file $case_file: $n" >&2; exit 1
+    fi
+    if [ "$n" -eq 0 ]; then
+        echo "case file has no cases: $case_file" >&2; exit 1
+    fi
+    TOTAL_CASES=$((TOTAL_CASES + n))
+done
+EXPECTED_ROWS=$((TOTAL_CASES * ${#MODELS[@]}))
+
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-eval.XXXXXX")
 SERVER_PID=""
 STAGING="${OUT}.partial"
+# The staging path is derived from an operator-supplied `--out`, so it is fully predictable
+# — and `: >` follows symlinks. Reproduced in round 3: a symlink planted at
+# `<out>.partial` had its target truncated and then filled with eval rows, before the first
+# row was written. Refuse anything that is not a regular file we are creating.
+if [ -L "$STAGING" ]; then
+    echo "refusing to write $STAGING — it is a symlink" >&2; exit 1
+fi
+if [ -e "$STAGING" ] && [ ! -f "$STAGING" ]; then
+    echo "refusing to write $STAGING — it exists and is not a regular file" >&2; exit 1
+fi
+# A previous run's partial results are evidence someone may be mid-investigation; cleanup
+# tells them the rows were kept, and then the next run silently truncated the file.
+if [ -s "$STAGING" ]; then
+    echo "a previous run left partial results at $STAGING" >&2
+    echo "  move or delete them first — this run will not overwrite them" >&2
+    exit 1
+fi
 : > "$STAGING"
 cleanup() {
     # NOT `exec 3>&- 2>/dev/null` — that form applies both redirections to the shell and
@@ -213,20 +255,29 @@ for model in "${MODELS[@]}"; do
     echo "model: ${model:-(server default)}"
     server_start
     if ! handshake; then
-        echo "  handshake failed — skipping this model" >&2
+        echo "  handshake failed — recording this model's cases as failures" >&2
+        # NOT `continue` with nothing written. A model that never starts used to vanish,
+        # and a two-model comparison would publish one side of itself at exit 0.
+        for case_file in "${CASE_FILES[@]}"; do
+            python3 - "$case_file" "$model" >> "$STAGING" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for c in doc["cases"]:
+    print(json.dumps({"case": c["id"], "tool": c["tool"], "model_requested": sys.argv[2] or None,
+                      "model": None, "elapsed_seconds": None, "finish_reason": None,
+                      "text": None, "checks": [], "mechanical_ok": None,
+                      "human_review": [], "error": "transport: session handshake failed"},
+                     ensure_ascii=False))
+PYEOF
+        done
         server_stop
         continue
     fi
 
     for case_file in "${CASE_FILES[@]}"; do
-        [ -f "$case_file" ] || { echo "  no such case file: $case_file" >&2; continue; }
-        # A malformed or empty case file used to be skipped in silence: python failed,
-        # `count` was empty, and `[ "$idx" -lt "" ]` quietly evaluated false.
-        if ! count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file" 2>&1); then
-            echo "  unreadable case file $case_file: $count" >&2
-            continue
-        fi
-        [ "$count" -gt 0 ] || { echo "  case file has no cases: $case_file" >&2; continue; }
+        # Readability and non-emptiness were settled in the preflight above, so there is no
+        # skip path left here to fail open through.
+        count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file")
         idx=0
         while [ "$idx" -lt "$count" ]; do
             RPC_ID=$((RPC_ID + 1))
@@ -276,12 +327,15 @@ print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": s
 import json, sys
 d = json.load(sys.stdin)
 if d.get("error"):
-    print("tool error — " + d["error"][:60]); raise SystemExit
+    print("tool error — " + re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "\ufffd", d["error"])[:60]); raise SystemExit
+import re
 bad = [c["check"] for c in d["checks"] if not c["ok"]]
 mark = "ok  " if not bad else "FLAG"
 extra = "" if not bad else "  " + ",".join(bad)
 fin = "" if not d.get("finish_reason") else "  [%s]" % d["finish_reason"]
-print("%s  %5.1fs  %s%s%s" % (mark, d.get("elapsed_seconds") or 0.0, d.get("model") or "?", fin, extra))'
+import re
+def safe(v): return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "\ufffd", str(v))[:80]
+print("%s  %5.1fs  %s%s%s" % (mark, d.get("elapsed_seconds") or 0.0, safe(d.get("model") or "?"), fin, extra))'
             idx=$((idx + 1))
         done
         server_alive || break
@@ -334,13 +388,13 @@ if [ -n "$INCOMPLETE" ]; then
     echo >&2
     echo "  incomplete run ($INCOMPLETE) — $OUT left as it was." >&2
     echo "  What this run did produce: $STAGING" >&2
-    python3 "$RPC" summarize --out "$STAGING"
+    python3 "$RPC" summarize --out "$STAGING" --expected "$EXPECTED_ROWS"
     exit 1
 fi
 mv "$STAGING" "$OUT" || { echo "could not publish to $OUT; rows kept at $STAGING" >&2; exit 1; }
 
 echo
-python3 "$RPC" summarize --out "$OUT"
+python3 "$RPC" summarize --out "$OUT" --expected "$EXPECTED_ROWS"
 RC=$?
 echo "  rows: $OUT"
 exit $RC

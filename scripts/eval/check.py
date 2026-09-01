@@ -95,34 +95,54 @@ def check_sentence_count(text, expect):
 # anywhere". That is the honest scope: a lead-in buried in the middle is not caught.
 # Anchoring is what keeps ordinary content that merely contains a colon ("Three items
 # were deferred: budget, venue") from being flagged.
+# A preamble is the model talking about the ACT OF PRODUCING OUTPUT. Every entry below must
+# carry that meaning on its own, and three rounds have shown how easily one that does not
+# slips in:
+#
+#   round 1  `當然|当然[，,、:：]` — alternation precedence dropped the punctuation requirement
+#   round 2  `我(?:已經|會|來|將)` and `i(?:'ve| have| will)` — bare first-person openers
+#   round 3  the fix for those introduced META WORDS THAT ARE ORDINARY WORDS: 整理 (tidy
+#            up), 回答 (answer, the everyday verb), `below`, `as follows`, `result` — so
+#            「我會整理房間，然後出門。」 and "I have attached the figures below." were
+#            flagged, and so was the most natural correct summary of this repo's OWN
+#            `short-source-preamble-bait` case: "This is the result of an expired TLS
+#            certificate: …". A false positive on the harness's own fixture.
+#
+# The corpus in scripts/tests/eval-checks.test.sh is the guard, and it is an enumeration —
+# it closes the instances it lists, not the property. So the rule for adding a pattern is:
+# the trigger must be a word about OUTPUT, never a word that can appear in output.
 _PREAMBLE_PATTERNS = [
-    r"(?:sure|certainly|of course|okay|ok)\s*[,!:.]",
-    # The space belongs INSIDE the group. With it outside, the three alternatives read
-    # `here is` / `here are` / `here 's`, so "Here's" — the commonest English preamble
-    # opener there is — could never match and the `'s` branch was unreachable.
+    r"(?:sure|certainly|okay|ok)\s*[,!:.]",
+    # "Of course, the deadline had already slipped." is ordinary content, so this one needs
+    # the lead-in shape rather than a bare comma.
+    r"of course[,!:.]\s*(?:here|below|the following|this is)\b",
+    # The space belongs INSIDE the group. With it outside, the alternatives read `here is` /
+    # `here are` / `here 's`, so "Here's" — the commonest English preamble opener — could
+    # never match.
     r"here(?: is| are|'s)\b",
     r"(?:the following|below) (?:is|are)\b",
-    r"this is (?:a |the )?(?:summary|translation|rewrite|answer|result)\b",
-    # A first-person opener is NOT a preamble by itself: "I will attend the meeting on
-    # Tuesday" and "I have three concerns" are ordinary content. It becomes one only when
-    # a meta word follows — the model talking about the act of producing output. The bare
-    # form flagged both, and its Chinese twin below had the identical defect: round 2
-    # fixed the one line a reviewer named and left the class open, which is the failure
-    # CLAUDE.md has a section about.
+    # `result` and a bare `answer` are ordinary nouns; requiring "of"/"below" after a
+    # genuinely meta noun keeps this about output.
+    r"this is (?:a|the) (?:summary|translation|rewrite|paraphrase)\b",
+    # A first-person opener is not a preamble by itself: "I will attend the meeting on
+    # Tuesday" is ordinary content. It becomes one only when a word about output follows.
     r"i(?:'ve| have| will| ?'ll| am going to)[^.!?\n]{0,40}"
-    r"(?:summari[sz]|rewr(?:ite|ote)|translat|outlin|paraphras|as follows|below)",
-    r"let me\b",
-    r"as requested\b",
+    r"(?:summari[sz]|rewr(?:ite|ote)|translat|outlin|paraphras)",
+    r"let me (?:summari[sz]e|rewrite|translate|paraphrase|outline)\b",
+    r"as requested[,:]",
     r"(?:以下|下面)(?:是|為|为|就是)",
-    r"這(?:是|就是)(?:一份|一個|一个)?(?:摘要|翻譯|翻译|結果|结果|回答)",
+    r"這(?:是|就是)(?:一份|一個|一个)?(?:摘要|翻譯|翻译)",
     r"好的[，,、:：]",
     # `|` binds looser than the character class, so `當然|当然[，,、:：]` meant (當然) OR
-    # (当然 + punctuation) — the Traditional form carried no punctuation requirement and
-    # flagged ordinary content like 當然可以達成這個目標。
+    # (当然 + punctuation) — the Traditional form carried no punctuation requirement.
     r"(?:當然|当然)[，,、:：]",
-
+    # 整理 (tidy up) and 回答 (answer) are everyday verbs, and 如下 is not about output —
+    # dropping them cost the one true positive 「我已經幫你整理好了。」, which is a preamble
+    # while 「我會整理房間，然後出門。」 is not. The difference is 幫你: the model addressing
+    # the requester about work done ON THEIR BEHALF. That, not the verb, is the meta signal.
     r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,14}"
-    r"(?:摘要|總結|总结|整理|翻譯|翻译|改寫|改写|如下|回答)",
+    r"(?:摘要|總結|总结|翻譯|翻译|改寫|改写)",
+    r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,8}(?:幫你|幫您|帮你|帮您|為你|为你|替你)",
     r"(?:摘要|總結|总结)(?:如下|如下：)",
 ]
 _PREAMBLE_RE = re.compile("|".join(_PREAMBLE_PATTERNS), re.IGNORECASE)
@@ -215,12 +235,21 @@ _TRAILING_PUNCT = "  \t\r\n\u3000.。!！?？,，、:：;；\"'“”‘’`*_~"
 _TRAILING_PUNCT += "「」『』（）()〔〕[]【】《》〈〉{}"
 
 
+def _norm_label(value):
+    """Shared normalization, applied to the reply AND to the candidates/gold."""
+    return value.strip().strip(_TRAILING_PUNCT).strip().casefold()
+
+
 def check_category_member(text, expect):
     categories = expect.get("categories")
     if not isinstance(categories, list) or not categories:
         raise ValueError("category_member needs a non-empty 'categories' list")
-    normalized = text.strip().strip(_TRAILING_PUNCT).strip().casefold()
-    wanted = {str(c).strip().casefold() for c in categories}
+    # Normalize BOTH sides. Widening _TRAILING_PUNCT to the bracket families made any
+    # candidate that itself ends in one unmatchable: a model copying `feature request (UI)`
+    # exactly as the tool's prompt instructs was scored a violation, because the reply lost
+    # its trailing `)` and the candidate kept it.
+    normalized = _norm_label(text)
+    wanted = {_norm_label(str(c)) for c in categories}
     return {
         "ok": normalized in wanted,
         "observed": text.strip()[:80],
@@ -265,8 +294,8 @@ def check_label_is(text, expect):
     gold = expect.get("expected")
     if not isinstance(gold, str) or not gold.strip():
         raise ValueError("label_is needs a non-empty 'expected' string")
-    normalized = text.strip().strip(_TRAILING_PUNCT).strip().casefold()
-    want = gold.strip().casefold()
+    normalized = _norm_label(text)
+    want = _norm_label(gold)
     return {
         "ok": normalized == want,
         "observed": text.strip()[:80],

@@ -15,13 +15,22 @@ make eval MODELS="--model A --model B --model C"      # the comparison that matt
 |---|---|
 | `0` | the run happened and every mechanical check passed |
 | `2` | the run happened and there are **findings** — a model did badly, which is data, not a build failure |
-| `1` | the run did **not** happen: nothing measured, or a tool/transport/malformed failure |
+| `1` | the run did **not** happen: nothing measured, a tool/transport/malformed failure, or **fewer rows than the run owed** |
+| `64` | usage error (`EX_USAGE`) — a bad flag or a malformed environment value. Round 3 found these exiting 2, which the table above defines as "ran fine, findings" |
 
 The two-way version of this was indefensible: a tool error exited 1 while a model returning
 an empty string exited 0, so the axis was *which layer the emptiness happened at* rather
 than what it meant — and an all-red run reported success. `results.jsonl` is only replaced
 by a **complete** run; an incomplete one leaves the previous file alone and writes what it
-did measure to `results.jsonl.partial`.
+did measure to `results.jsonl.partial`, which a later run refuses to overwrite.
+
+**Completeness is counted, not inferred.** `run.sh` computes how many rows a run owes
+(models × cases) before anything starts, and `summarize` compares. Every fail-open variant
+the first three review rounds found reduces to that number being unknown: a tool error that
+produced a row the guard misread, a transport failure that produced none, a model whose
+handshake failed, a case file that would not parse. Each was fixed as its own branch and the
+next appeared one layer out. The README already named the root — *"nothing in it says how
+many rows it should have"* — so the fix is to count.
 
 Output is `scripts/eval/results.jsonl`, one row per (model × case). It is a
 measurement record, not a score: **the interesting output is where the cliff is**, and
@@ -45,7 +54,7 @@ measurement goes stale silently, and a stale one is worse than none.
 
 ## What is checked mechanically, and what is not
 
-Five checks, in `check.py`. Each is a pure function of the reply text, and each is
+Six checks, in `check.py`. Each is a pure function of the reply text, and each is
 unit-tested in the **hermetic** suite (`scripts/tests/eval-checks.test.sh`) with a fixture
 it must fail on and one it must pass on, so they stay verified on a machine with no oMLX.
 
@@ -56,7 +65,14 @@ it must fail on and one it must pass on, so they stay verified on a machine with
 | `no_preamble` | did the reply start with content, or with "Here is a summary of…"? The server sends `outputOnlyRule` as its system prompt on every call; this measures whether the model obeyed it |
 | `script_purity` | Traditional Chinese asked for, Simplified characters delivered? |
 | `category_member` | is the label one of the offered candidates, or a sentence mentioning one? Answers "did it follow the format", **not** "was it right" |
-| `label_is` | is the answer **correct**, against a gold label in `expect`? A model can be right and undisciplined ("I would say bug"), or disciplined and wrong; these two checks separate those |
+| `label_is` | correct **and** bare, conjoined — it compares the raw reply to a gold label. Useful when you want both at once; **not** the accuracy signal, because a right answer that was decorated fails it identically to a wrong one |
+
+Accuracy independent of format comes from `expect_row: {"category": …}` — the server has
+already matched the reply onto the caller's list, so it survives decoration. Round 3 used
+`label_is` for accuracy and then told readers that it and `category_member` separated "right
+but undisciplined" from "disciplined but wrong"; since gold is always one of the categories
+and both applied the same normalisation, `label_is` passing *implied* `category_member`
+passing, and the combination readers were told to look for was unreachable.
 
 A case may also carry `expect_row`, which asserts on **row fields** rather than reply text —
 `{"matched": false}` for out-of-domain classify input, where the right behaviour is to name
@@ -71,10 +87,11 @@ replacing a whole `ok` expression with a constant; real logic mutations all left
 green. Round 2 fixed that for **code paths** — 12 targeted mutations and per-pattern
 deletion of every preamble regex, zero survivors — and then claimed the class was closed.
 It was not: the same trap had moved onto the **constant tables**. Deleting any one line of
-`_SIMPLIFIED_ONLY` survived (8 of 10 lines), shrinking the set to exactly the asserted floor
-survived, `_TERMINATORS` losing `！？…` survived, and `_CLOSERS` losing its whitespace
-survived — because a table's power was pinned only by whichever characters happened to
-appear in some fixture.
+`_SIMPLIFIED_ONLY` survived, shrinking the set to exactly the asserted floor survived,
+`_TERMINATORS` losing terminators survived, and `_CLOSERS` losing its whitespace survived —
+because a table's power was pinned only by whichever characters happened to appear in some
+fixture. Round 4 found the same trap once more in the **add** direction, and found the
+guards themselves individually deletable because nothing counted them.
 
 What is true now, measured rather than asserted: every line of `_SIMPLIFIED_ONLY` has a
 per-character probe tested **alone**, plus an assertion that every line still *has* one, so

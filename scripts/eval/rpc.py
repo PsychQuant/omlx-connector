@@ -15,8 +15,29 @@ Two subcommands, both used by run.sh and nothing else:
 
 import argparse
 import json
+import re
 import subprocess
 import sys
+
+
+# Fields a case may assert on with `expect_row`. These are the keys the tool payloads
+# actually carry (see Server.swift's render() and handleClassify).
+ROW_FIELDS = {"task", "category", "matched", "model", "finish_reason", "elapsed_seconds"}
+
+
+# Model- and server-authored strings reach the operator's terminal. Round 3 demonstrated a
+# stub returning a `model` id containing CSI and OSC sequences that erased the line, forged
+# a harness verdict and changed the window title. This repo already has the convention —
+# CLAUDE.md: "system-generated strings are not trusted into logs" — it just had not been
+# applied to this path.
+_UNSAFE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def safe(value, limit=200):
+    """Strip control characters from anything we did not author before printing it."""
+    if value is None:
+        return None
+    return _UNSAFE.sub("\ufffd", str(value))[:limit]
 
 
 def load_case(path, index):
@@ -163,6 +184,14 @@ def cmd_score(args):
         # category_member pointed the verdict BACKWARDS: the desired outcome (no label
         # named) failed, the undesired one (forcing a label) passed.
         for field, want in (case.get("expect_row") or {}).items():
+            # A typo here used to be indistinguishable from a model finding, and WORSE than
+            # a loud failure: `{"matchd": false}` compares None != False, so it FLAGs on
+            # every model forever and the run exits 2 — "a model did badly, which is data".
+            # `expect` has a name guard; this channel was added without one.
+            if field not in ROW_FIELDS:
+                raise SystemExit(
+                    f"unknown expect_row field {field!r} in case {case['id']!r} "
+                    f"(known: {', '.join(sorted(ROW_FIELDS))})")
             got = payload.get(field)
             row["checks"].append({
                 "check": f"row.{field}",
@@ -215,11 +244,14 @@ def cmd_summarize(args):
         for q in row.get("human_review", []):
             review.append((row.get("case"), q))
 
-    print(f"  measured={measured}  errored={errored}  malformed={malformed}")
+    total = measured + errored + malformed
+    owed = args.expected
+    print(f"  measured={measured}  errored={errored}  malformed={malformed}"
+          + (f"  (of {owed} owed)" if owed else ""))
     if flagged:
         print(f"  {len(flagged)} row(s) failed a mechanical check:")
         for case, model, bad in flagged:
-            print(f"    {case}  [{model}]  {', '.join(bad)}")
+            print(f"    {safe(case, 60)}  [{safe(model, 80)}]  {', '.join(bad)}")
 
     # The half issue #1 asks NOT to be auto-judged. run.sh never printed these — the
     # questions were written into the file and then never put in front of anyone, so
@@ -232,7 +264,7 @@ def cmd_summarize(args):
             if (case, q) in seen:
                 continue
             seen.add((case, q))
-            print(f"    {case}: {q}")
+            print(f"    {safe(case, 60)}: {safe(q, 300)}")
 
     print()
     # THE EXIT-CODE CONTRACT. Round 2 found the previous two-way split indefensible: a tool
@@ -248,6 +280,15 @@ def cmd_summarize(args):
     # 2 rather than 1 for findings because `make eval` must not fail merely because a model
     # is imperfect, which it always is; and not 0, because automation reading this is the
     # only consumer that cannot read the prose above.
+    # The shortfall check. Every fail-open variant three verify rounds found reduces to
+    # this one number being unknown: rows that were never written cannot be reasoned about
+    # from the rows that were. Comparing against what the run OWED catches them all,
+    # including whichever branch would have been added next.
+    if owed and total < owed:
+        print(f"  {owed - total} row(s) were never written — {total} of {owed} cases",
+              file=sys.stderr)
+        print("  produced any result at all. This run is incomplete.", file=sys.stderr)
+        return 1
     if measured == 0:
         print("  NOTHING WAS MEASURED. Every call errored or the file is empty —", file=sys.stderr)
         print("  this is not a passing run, it is a run that did not happen.", file=sys.stderr)
@@ -286,6 +327,8 @@ def main(argv=None):
 
     z = sub.add_parser("summarize")
     z.add_argument("--out", required=True)
+    z.add_argument("--expected", type=int, default=0,
+                   help="how many rows the run owed (models x cases); 0 disables the check")
     z.set_defaults(func=cmd_summarize)
 
     args = p.parse_args(argv)
