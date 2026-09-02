@@ -65,6 +65,14 @@ done
 [ ${#CASE_FILES[@]} -gt 0 ] || CASE_FILES=("$CASE_DIR"/*.json)
 [ ${#MODELS[@]} -gt 0 ] || MODELS=("")   # "" = no model override; the server decides
 
+# The same model or case file twice is a usage error, not a doubled run. Round 4 found
+# `--model stub --model stub` producing ten rows at exit 0: the accounting was consistent
+# with itself because the preflight and the run read the same duplicated array.
+dup=$(printf '%s\n' "${MODELS[@]}" | sort | uniq -d | head -1)
+[ -z "$dup" ] || { echo "--model '$dup' given more than once" >&2; exit 64; }
+dup=$(for f in "${CASE_FILES[@]}"; do python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$f"; done | sort | uniq -d | head -1)
+[ -z "$dup" ] || { echo "--cases '$dup' given more than once" >&2; exit 64; }
+
 # ── Preconditions ─────────────────────────────────────────────────────────────────
 command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 [ -x "$BINARY" ] || {
@@ -88,7 +96,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; 
 # a fourth.
 if ! PING=$("$BINARY" --ping 2>&1); then
     echo "oMLX preflight failed — nothing to evaluate" >&2
-    printf '%s\n' "$PING" | sed 's/^/  /' >&2
+    printf '%s\n' "$PING" | tr -d '\000-\011\013-\037\177' | sed 's/^/  /' >&2
     echo "  start oMLX, or set OMLX_BASE_URL to where it listens" >&2
     exit 1
 fi
@@ -131,14 +139,20 @@ fi
 if [ -e "$STAGING" ] && [ ! -f "$STAGING" ]; then
     echo "refusing to write $STAGING — it exists and is not a regular file" >&2; exit 1
 fi
-# A previous run's partial results are evidence someone may be mid-investigation; cleanup
-# tells them the rows were kept, and then the next run silently truncated the file.
+# A previous run's partial results are evidence someone may be mid-investigation. Round 3
+# truncated them silently; round 4 refused to run while they existed, which made the harness
+# single-shot after any imperfect run — the common case with small models, and the case this
+# harness exists to study. Keep them under a timestamped name and proceed.
 if [ -s "$STAGING" ]; then
-    echo "a previous run left partial results at $STAGING" >&2
-    echo "  move or delete them first — this run will not overwrite them" >&2
-    exit 1
+    KEPT="$STAGING.$(date +%Y%m%dT%H%M%S).$$"
+    mv "$STAGING" "$KEPT" || { echo "could not move aside $STAGING" >&2; exit 1; }
+    echo "  previous partial results kept at: $KEPT" >&2
 fi
-: > "$STAGING"
+# The checks above are check-then-write; the WRITE is the defence. rpc.py append opens with
+# O_NOFOLLOW, so a symlink that appears between the check and the open fails the open instead
+# of being followed — round 4's verify named the race as the class the planted symlink was an
+# instance of.
+: | python3 "$RPC" append --out "$STAGING" --create || exit 1
 cleanup() {
     # NOT `exec 3>&- 2>/dev/null` — that form applies both redirections to the shell and
     # is exactly what server_stop below documents as harmful. It survived here for a whole
@@ -248,7 +262,7 @@ print(json.dumps({"jsonrpc":"2.0","id":int(sys.argv[1]),"method":"initialize","p
 # ── Run ───────────────────────────────────────────────────────────────────────────
 echo "eval → $OUT"
 echo "  binary: $BINARY"
-printf '%s\n' "$PING" | sed 's/^/  /'
+printf '%s\n' "$PING" | tr -d '\000-\011\013-\037\177' | sed 's/^/  /'
 
 for model in "${MODELS[@]}"; do
     echo
@@ -259,7 +273,7 @@ for model in "${MODELS[@]}"; do
         # NOT `continue` with nothing written. A model that never starts used to vanish,
         # and a two-model comparison would publish one side of itself at exit 0.
         for case_file in "${CASE_FILES[@]}"; do
-            python3 - "$case_file" "$model" >> "$STAGING" <<'PYEOF'
+            python3 - "$case_file" "$model" <<'PYEOF' | python3 "$RPC" append --out "$STAGING"
 import json, sys
 doc = json.load(open(sys.argv[1]))
 for c in doc["cases"]:
@@ -283,7 +297,7 @@ PYEOF
             RPC_ID=$((RPC_ID + 1))
             request=$(python3 "$RPC" request \
                           --case-file "$case_file" --index "$idx" --id "$RPC_ID" --model "$model")
-            case_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"])' "$case_file" "$idx")
+            case_id=$(python3 -c 'import json,re,sys; print(re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", str(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"])))' "$case_file" "$idx")
             case_tool=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["tool"])' "$case_file" "$idx")
             printf '  %-28s ' "$case_id"
 
@@ -300,7 +314,7 @@ print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": s
                   "model": None, "elapsed_seconds": None, "finish_reason": None,
                   "text": None, "checks": [], "mechanical_ok": None,
                   "human_review": [], "error": "transport: no response from the server"},
-                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" >> "$STAGING"
+                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
                 idx=$((idx + 1))
                 server_alive || break
                 continue
@@ -316,26 +330,18 @@ print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": s
                   "model": None, "elapsed_seconds": None, "finish_reason": None,
                   "text": None, "checks": [], "mechanical_ok": None,
                   "human_review": [], "error": "scoring failed"},
-                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" >> "$STAGING"
+                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
                 idx=$((idx + 1))
                 continue
             fi
             # A failed append used to leave the row counter incremented anyway, so the
             # guard counted attempts rather than writes.
-            printf '%s\n' "$row" >> "$STAGING" || { echo "ERROR (could not write row)"; exit 1; }
-            printf '%s\n' "$row" | python3 -c '
-import json, sys
-d = json.load(sys.stdin)
-if d.get("error"):
-    print("tool error — " + re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "\ufffd", d["error"])[:60]); raise SystemExit
-import re
-bad = [c["check"] for c in d["checks"] if not c["ok"]]
-mark = "ok  " if not bad else "FLAG"
-extra = "" if not bad else "  " + ",".join(bad)
-fin = "" if not d.get("finish_reason") else "  [%s]" % d["finish_reason"]
-import re
-def safe(v): return re.sub(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]", "\ufffd", str(v))[:80]
-print("%s  %5.1fs  %s%s%s" % (mark, d.get("elapsed_seconds") or 0.0, safe(d.get("model") or "?"), fin, extra))'
+            printf '%s\n' "$row" | python3 "$RPC" append --out "$STAGING" || { echo "ERROR (could not write row)"; exit 1; }
+            # rpc.py rowline, not an inline `python3 -c`: round 4 put `re.sub` one line above
+            # `import re` in the inline version, on the tool-error branch, which no test could
+            # reach — so every recorded tool error printed a traceback. The line is now a
+            # function with a test that reaches that branch.
+            printf '%s\n' "$row" | python3 "$RPC" rowline
             idx=$((idx + 1))
         done
         server_alive || break
@@ -361,30 +367,11 @@ done
 # $OUT keeps the last complete run. This is the property the README claims when it calls
 # the file a measurement record — a silently truncated record is worse than none, and
 # nothing inside it says how many rows it should have had.
-INCOMPLETE=$(python3 - "$STAGING" <<'PYEOF'
-import json, sys
-measured = errored = 0
-try:
-    for line in open(sys.argv[1], encoding="utf-8"):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            errored += 1
-            continue
-        errored += 1 if row.get("error") else 0
-        measured += 0 if row.get("error") else 1
-except OSError:
-    print("no output file")
-    raise SystemExit
-if measured == 0:
-    print("nothing was measured")
-elif errored:
-    print(f"{errored} of {measured + errored} call(s) failed")
-PYEOF
-)
-if [ -n "$INCOMPLETE" ]; then
+# ONE definition of "complete", and it lives in rpc.py (`completeness()`), asked here for the
+# publish decision and again inside summarize for the verdict. Round 4 had two: this gate said
+# "measured>=1 and no errors", summarize said "and total == owed", and the mv between them
+# meant a short run could publish. Now the count is consulted BEFORE anything is replaced.
+if ! INCOMPLETE=$(python3 "$RPC" complete --out "$STAGING" --expected "$EXPECTED_ROWS" 2>&1); then
     echo >&2
     echo "  incomplete run ($INCOMPLETE) — $OUT left as it was." >&2
     echo "  What this run did produce: $STAGING" >&2

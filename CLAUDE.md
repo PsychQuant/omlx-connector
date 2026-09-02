@@ -444,6 +444,23 @@ author did: `label_is` and `expect_row` were tested only against fixtures the su
 for itself, so deleting them from the **shipped case files** left the suite byte-identical.
 Same shape as the Swift call site one round earlier. The shipped files are now checked too.
 
+Round five is the one to read if you read only one. Round 4 had answered three rounds of
+"the class moved one layer out" with two **accounting** quantities — the rows a run owes, and
+the assertions the suite runs — and predicted a fifth layer would have to get past a number.
+The Devil's Advocate's measured reply: you do not have to get past it; you can avoid reaching
+it (remove `python3` and the suite exited 0 before the count line), or leave it unchanged
+(neuter the assertion helper and the suite stays at its full count, byte-identical). The
+count catches **deletion**. It cannot catch **weakening**. Round 5's answer is a canary — the
+suite re-run against broken copies of `check.py`, required to fail a pinned number of times —
+which is the offline mutation sweep in miniature, and the accounting moved into the EXIT trap
+so no early exit skips it. Both are still claims about a point in time; what is no longer
+claimed is that a test suite can be immune to someone with write access to it.
+
+The other round-5 lesson is smaller and exact: `run.sh`'s tool-error branch — round 1's
+entire subject — had never been reachable in the suite, because the stub produced only
+transport failures. A `NameError` shipped on it in round 4 and no test could see it. When a
+branch is what an issue is *about*, the first test to write is the one that reaches it.
+
 **The sweep is still not part of `make test`** — it takes ~30 suite runs — so the claim remains
 about a point in time. When you change a check or a table, re-run it, and expect the class you
 thought you closed to have moved. Two guards here are **corpora**, which close the shapes they
@@ -509,8 +526,10 @@ found both, in the tests written for the rule above:
 
 - that positive case *skipped* without `DEVELOPER_ID` and the suite still exited 0, so
   the one guard against "refuses everything" was silently absent in CI. Skips are now
-  counted and printed, and `REQUIRE_FULL_SUITE=1` turns any skip into a failure. Set it
-  on a release path.
+  counted and printed, and `REQUIRE_FULL_SUITE=1` turns any skip into a failure. `scripts/build-release.sh`
+  sets it and runs `make test` before building, so a release cannot be cut past a skipped
+  case. (This sentence said "set it on a release path" for four rounds while no release
+  path ran the suite at all.)
 - the forgery case discarded `codesign`'s exit status. Had codesign ever refused the
   embedded newline, the fixture would have been merely *unsigned*, refused for that
   instead, and the case would have printed `ok` forever while defending nothing. Building

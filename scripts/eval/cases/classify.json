@@ -1,21 +1,21 @@
 {
   "_comment": [
-    "local_classify cases. The gold labels live in data, not prose.",
+    "local_classify cases. The gold labels live in data (`expect_row.category`), not prose.",
     "",
-    "Three mechanisms, doing three different jobs — and round 3 shipped two of them conflated:",
+    "Three mechanisms, doing three different jobs:",
     "  expect_row.category — is the answer CORRECT, independent of how it was worded. The",
-    "                        server has already matched the reply onto the caller's list, so",
-    "                        this survives decoration ('Category: bug' still yields bug).",
+    "                        server has matched the reply onto the caller's list, so this",
+    "                        survives decoration ('Category: bug' still yields bug).",
     "  category_member     — did the model answer with a BARE label as instructed.",
-    "  label_is            — correct AND bare, conjoined. Useful when you want both at once;",
-    "                        NOT the accuracy signal, because a right answer that was decorated",
-    "                        fails it identically to a wrong one.",
+    "  expect_row.matched  — did the server match anything at all; false is the desired",
+    "                        outcome for content that fits none of the offered labels.",
+    "`label_is` (exists in check.py) is correct AND bare, conjoined — not used by any shipped",
+    "case, because a right answer that was decorated fails it identically to a wrong one.",
     "",
-    "Round 3 used label_is for accuracy and then told readers that label_is and",
-    "category_member separate 'right but undisciplined' from 'disciplined but wrong'. Since",
-    "gold is always one of the categories and both applied the same normalization, label_is",
-    "passing IMPLIED category_member passing — the combination readers were told to look for",
-    "was unreachable. Accuracy now comes from the server's matched label instead."
+    "The server's matching rule matters to all three and changed in round 5: exact match",
+    "wins; otherwise the UNIQUE contained label; otherwise unmatched. Under the old rule —",
+    "first offered label contained anywhere — 'This is not a bug, it is a feature request'",
+    "resolved to `bug` and the accuracy check scored a wrong answer as correct."
   ],
   "cases": [
     {
@@ -40,8 +40,8 @@
         }
       },
       "human_review": [
-        "Issue #1 observed a 0.6B answering `positive` here. label_is now decides that; what is left for you is whether a wrong answer was a near miss (neutral) or an inversion (positive).",
-        "If category_member failed while label_is passed, the model was right but decorated its answer."
+        "Issue #1 observed a 0.6B answering `positive` here. row.category now decides correct/incorrect; what is left for you is whether a wrong answer was a near miss (neutral) or an inversion (positive).",
+        "If category_member FLAGs while row.category stays green, the model was right but decorated its answer ('Category: negative.'). If both FLAG, read `text`: since round 5 a reply naming two options is unmatched, so 'not positive; negative' — a right answer — lands here too. That is the safe direction (a FLAG on a right answer, never a PASS on a wrong one), and it is a limit, not a verdict."
       ],
       "expect_row": {
         "category": "negative"
@@ -69,8 +69,8 @@
         }
       },
       "human_review": [
-        "Compare `text` (the raw reply) with `category` (what the server matched it to). A gap is decoration the caller never asked for — and it now shows as category_member FLAG while row.category stays green, which is the 'right but undisciplined' combination.",
-        "This is the case where a 0.6B answered `feature request`: correct-looking row, wrong answer, until the gold label was in data."
+        "Compare `text` (the raw reply) with `category` (what the server matched it to). A gap is decoration the caller never asked for — it shows as category_member FLAG while row.category stays green, which is the 'right but undisciplined' combination.",
+        "This is the case where a 0.6B answered `feature request`: correct-looking row, wrong answer, until the gold label was in data. Before round 5, 'This is not a bug — it is a feature request' would have matched `bug` (first offered label contained anywhere) and scored CORRECT; it is now unmatched and FLAGs."
       ],
       "expect_row": {
         "category": "bug"
@@ -89,8 +89,8 @@
       },
       "expect": {},
       "human_review": [
-        "A forced label that matches is WORSE than an unmatched reply: it looks clean and is wrong. That is now a mechanical failure rather than a note.",
-        "LIMIT: the server's `matched` is substring CONTAINMENT (`handleClassify` uses localizedCaseInsensitiveContains), so an honest refusal that names the options — 'neither a bug nor a feature request' — scores matched:true and FLAGs here. That reply is arguably better than 'none', and this check cannot tell them apart. Read `text` before believing this FLAG."
+        "A forced label that matches is WORSE than an unmatched reply: it looks clean and is wrong. That is a mechanical failure here, not a note.",
+        "Since round 5 the server's matching is: exact label wins; otherwise the UNIQUE label the reply contains; otherwise unmatched. So an honest refusal that names the options it rejects — 'neither a bug nor a feature request' — is unmatched, which is the desired outcome here. LIMIT that remains: a reply naming exactly one option in the course of rejecting it ('not a bug, something else') still matches it. Read `text` before believing either verdict."
       ],
       "expect_row": {
         "matched": false

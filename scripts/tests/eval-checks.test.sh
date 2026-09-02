@@ -1,10 +1,13 @@
 #!/bin/bash
 # Unit tests for scripts/eval/check.py — the mechanical checks used by `make eval`.
 #
-# WHY THESE ARE IN THE HERMETIC SUITE: check.py is pure text processing. No model, no
-# network, no oMLX. The harness that *uses* it (scripts/eval/run.sh) needs a live
-# server and is deliberately outside `make test`; the checks themselves are the only
-# part with a right answer, so they stay verified on every machine and in CI.
+# WHAT THIS SUITE IS: self-contained, not network-free. check.py is pure text processing
+# and most cases here are that. But this file also binds an ephemeral 127.0.0.1 socket
+# (scripts/tests/stubs/fake-omlx.py) so the REAL binary's response parsing can be
+# exercised, drives scripts/eval/run.sh end to end against a stub MCP, and re-invokes
+# itself against mutated copies of check.py. No oMLX, no model, no off-box traffic — and
+# an earlier header said "no network" for three rounds after that stopped being true,
+# which CLAUDE.md names as the message-shaped bug this repo keeps producing.
 #
 # EVERY CHECK HAS BOTH DIRECTIONS, AND THE FIXTURES SIT ON THE BOUNDARY.
 #
@@ -32,6 +35,17 @@ set -u
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHECK="$REPO/scripts/eval/check.py"
+RPC="$REPO/scripts/eval/rpc.py"
+export RPC
+# CANARY MODE: this suite re-invokes itself against a deliberately broken copy of check.py
+# and requires a pinned number of its own assertions to fail. See THE CANARY below. In this
+# mode only the check-level cases run, and the trap prints how many failed instead of
+# judging the count.
+CANARY_MODE=""
+if [ -n "${EVAL_CHECKS_CANARY:-}" ]; then
+    CHECK="$EVAL_CHECKS_CANARY"
+    CANARY_MODE=1
+fi
 PASS=0
 FAIL=0
 SKIP=0
@@ -47,11 +61,48 @@ SUITE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/eval-checks.XXXXXX")
 # listening on loopback minutes later and had to be killed by hand. Any exit between spawn
 # and the inline kill leaked it permanently.
 FAKE_PID=""
-cleanup_suite() {
+
+# THE ACCOUNTING RUNS IN THE EXIT TRAP, NOT AT THE BOTTOM OF THE FILE.
+#
+# Round 4 put the self-count at the end of the file and called it "where the recursion
+# stops". Round 4's verify then removed python3 from PATH: the suite took an early
+# `exit 0` on line ~90, the count on line ~1156 was never evaluated, and `make test` was
+# green with zero assertions run. A guard that sits after every early exit guards nothing
+# that exits early. Every path out of this script — first line or last — goes through here.
+#
+# EXPECTED_CASES counts PASS + FAIL only. A SKIP is not a third kind of result in this
+# suite: every dependency it has (python3, the stubs, the built binary) is the repo's own,
+# so a skip means "this machine is not set up to run the suite", and that is a failure with
+# a message, not a pass with a footnote. Round 4 also found that the fake-oMLX block
+# contributed exactly one unit to the count whether it ran or skipped, so the only test able
+# to see the served-model call site could vanish silently.
+EXPECTED_CASES=248       # updated ON PURPOSE when a case is added or removed — see the tail
+finish_suite() {
+    local rc=0
     [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
     rm -rf "$SUITE_TMP"
+    if [ -n "$CANARY_MODE" ]; then
+        echo "CANARY_FAILS=$FAIL"
+        exit 0
+    fi
+    echo
+    echo "  $PASS passed, $FAIL failed, $SKIP skipped"
+    local ran=$((PASS + FAIL))
+    if [ "$ran" -ne "$EXPECTED_CASES" ]; then
+        echo "  FAIL — suite ran $ran assertion(s), expected $EXPECTED_CASES."
+        if [ "$SKIP" -gt 0 ]; then
+            echo "         $SKIP case(s) skipped. This suite has no legitimate skips — its dependencies"
+            echo "         are the repo's own (python3, scripts/tests/stubs/, .build/debug/). Build first."
+        else
+            echo "         A guard was added or removed. If deliberate, update EXPECTED_CASES;"
+            echo "         if not, something deleted coverage and every remaining case still passed."
+        fi
+        rc=1
+    fi
+    [ "$FAIL" -eq 0 ] || rc=1
+    exit "$rc"
 }
-trap cleanup_suite EXIT
+trap finish_suite EXIT
 
 skip() { echo "  SKIP — $1"; SKIP=$((SKIP + 1)); }
 
@@ -87,13 +138,14 @@ verdict() {
 
 echo "eval/check.py"
 
+# Not a skip. Without python3 nothing below can run, and "nothing ran" is a failure — the
+# round-4 verify reached exit 0 through exactly this branch. The EXIT trap would catch the
+# zero count anyway; saying so here is cheaper than making a reader work that out.
 command -v python3 >/dev/null 2>&1 || {
-    skip "python3 not available — the mechanical checks cannot run"
-    echo; echo "  $PASS passed, $FAIL failed, $SKIP skipped"
-    [ -n "${REQUIRE_FULL_SUITE:-}" ] && { echo "  REQUIRE_FULL_SUITE set — a skip is a failure"; exit 1; }
-    exit 0
+    echo "  FAIL — python3 not available: every assertion in this suite needs it, and none ran"
+    FAIL=$((FAIL + 1)); exit 1
 }
-[ -f "$CHECK" ] || { echo "  FAIL — $CHECK does not exist"; exit 1; }
+[ -f "$CHECK" ] || { echo "  FAIL — $CHECK does not exist"; FAIL=$((FAIL + 1)); exit 1; }
 
 # ── sentence_count ────────────────────────────────────────────────────────────────
 # local_summarize's prompt says "at most N sentence(s)", so this is a ceiling, not an
@@ -306,7 +358,12 @@ corpus() {  # corpus <expected: ok|not-ok> <label> <text...>
             bad=$((bad + 1))
         fi
     done
-    if [ "$bad" -eq 0 ]; then echo "  ok   — $label"; PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
+    # ONE ASSERTION PER FIXTURE. As one assertion per loop, hollowing a 21-entry corpus to a
+    # single entry left both the count and every canary unchanged — the DA's third
+    # weakening mutation. Counting per fixture binds EXPECTED_CASES and the canaries to the
+    # number of fixtures, which is the quantity that hollowing changes.
+    PASS=$((PASS + $# - bad)); FAIL=$((FAIL + bad))
+    [ "$bad" -eq 0 ] && echo "  ok   — $label ($# fixtures)"
 }
 
 corpus ok "no pattern flags ordinary content (false-positive corpus)" \
@@ -334,7 +391,10 @@ corpus ok "no pattern flags ordinary content (false-positive corpus)" \
     'I have three concerns, as follows.' \
     'Of course, the deadline had already slipped.' \
     'Let me know if the deadline changes.' \
-    'This is the result of an expired TLS certificate: renewal is automated, but the cron entry had been removed.'
+    'This is the result of an expired TLS certificate: renewal is automated, but the cron entry had been removed.' \
+    '我會幫你確認會議時間，並在今天下班前回覆。' \
+    '我來幫你買咖啡。' \
+    '我將為你保留一個位置。'
 
 corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
     'Here is a summary of the text: the deadline moved.' \
@@ -354,7 +414,9 @@ corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
     '當然，這是摘要。' \
     '我已經幫你整理好了。' \
     '摘要如下：期限延到四月五日。' \
-    '**Here is a summary:** the deadline moved.'
+    '**Here is a summary:** the deadline moved.' \
+    'Of course! Here is the summary: the deadline moved.' \
+    '我已經把摘要整理好了：期限延到四月五日。'
 
 # --- script_purity: both directions, so the set cannot be silently emptied ---------
 # RED-first: 紫 (紫色) and 凰 (鳳凰) are the SAME codepoint in both scripts; 划 (划船,
@@ -403,7 +465,12 @@ scorpus() {  # scorpus <expected: ok|not-ok> <label> <text...>
             bad=$((bad + 1))
         fi
     done
-    if [ "$bad" -eq 0 ]; then echo "  ok   — $label"; PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); fi
+    # ONE ASSERTION PER FIXTURE. As one assertion per loop, hollowing a 21-entry corpus to a
+    # single entry left both the count and every canary unchanged — the DA's third
+    # weakening mutation. Counting per fixture binds EXPECTED_CASES and the canaries to the
+    # number of fixtures, which is the quantity that hollowing changes.
+    PASS=$((PASS + $# - bad)); FAIL=$((FAIL + bad))
+    [ "$bad" -eq 0 ] && echo "  ok   — $label ($# fixtures)"
 }
 
 # Clean Traditional. Includes the four characters round 1 wrongly flagged, so that
@@ -449,12 +516,13 @@ while [ $i -lt ${#probes} ]; do
     [ "$v" = "False" ] || bad="$bad$ch"
     i=$((i + 1))
 done
-if [ -z "$bad" ]; then
-    echo "  ok   — every per-line probe character is detected (${#probes} lines covered)"
-    PASS=$((PASS + 1))
+# One assertion per probe, for the same reason corpus() counts per fixture.
+nbad=${#bad}
+PASS=$((PASS + ${#probes} - nbad)); FAIL=$((FAIL + nbad))
+if [ "$nbad" -eq 0 ]; then
+    echo "  ok   — every per-line probe character is detected (${#probes} probes, one per line)"
 else
     echo "  FAIL — these probe characters are no longer detected: $bad"
-    FAIL=$((FAIL + 1))
 fi
 
 # ...and the probe list must keep covering every line, or the guard above weakens silently
@@ -590,6 +658,14 @@ verdict "category_member tolerates square brackets" ok category_member \
     '{"categories":["bug","feature","question"]}' '[feature]'
 verdict "category_member tolerates markdown bold" ok category_member \
     '{"categories":["bug","feature","question"]}' '**feature**'
+# Round 4: _TRAILING_PUNCT was applied to the reply but not the candidates, so a model
+# copying `feature request (UI)` exactly as the tool's prompt instructs was scored a
+# violation. Round 5 normalized both sides — and wrote no fixture for it, so the sweep
+# could revert the candidate side and stay green.
+verdict "category_member: a candidate ending in a bracket matches its verbatim copy" ok category_member \
+    '{"categories":["feature request (UI)","bug (crash)"]}' 'feature request (UI)'
+verdict "label_is: a gold label ending in punctuation matches its verbatim copy" ok label_is \
+    '{"expected":"N/A."}' 'N/A.'
 
 # --- label_is: the labelled set that was there all along ---------------------------
 # Round 2: `classify.json` and README both said automating label accuracy "needs a labelled
@@ -607,13 +683,43 @@ verdict "label_is is case- and punctuation-tolerant" ok     label_is '{"expected
 verdict "label_is refuses a sentence containing it"  not-ok label_is '{"expected":"bug"}' 'I would say this is a bug.'
 guard_late() { :; }
 
+# --- usage errors exit 64 in EVERY program, not just run.sh --------------------------
+# Round 3 found usage errors exiting 2 (the contract's "ran fine, findings"). Round 4 fixed
+# run.sh and left check.py and rpc.py at 2, with check.py's docstring documenting the
+# collision as intentional — and the run.sh change itself had no test.
+usage64() {  # usage64 <description> <command...>
+    local desc="$1"; shift
+    "$@" >/dev/null 2>&1; local rc=$?
+    if [ "$rc" = "64" ]; then echo "  ok   — $desc"; PASS=$((PASS + 1))
+    else echo "  FAIL — $desc (exit $rc, wanted 64)"; FAIL=$((FAIL + 1)); fi
+}
+usage64 "check.py: unknown check name is a usage error"   python3 "$CHECK" --check no_such_check --expect '{}' --text-file /dev/null
+usage64 "check.py: malformed --expect is a usage error"   python3 "$CHECK" --check sentence_count --expect '{' --text-file /dev/null
+usage64 "check.py: unknown flag is a usage error"         python3 "$CHECK" --bogus
+usage64 "rpc.py: unknown subcommand is a usage error"     python3 "$RPC" bogus
+usage64 "rpc.py: unknown flag is a usage error"           python3 "$RPC" summarize --bogus
+usage64 "run.sh: unknown flag is a usage error"           "$REPO/scripts/eval/run.sh" --bogus
+usage64 "run.sh: a missing option value is a usage error" "$REPO/scripts/eval/run.sh" --model
+usage64 "run.sh: a non-numeric timeout is a usage error"  env OMLX_EVAL_TIMEOUT=abc "$REPO/scripts/eval/run.sh"
+# A9: the same model or case file twice is a usage error, not a doubled run. Round 4 found
+# `--model stub --model stub` producing 10 rows at exit 0, the accounting consistent with
+# itself because both the preflight and the run read the same duplicated array.
+usage64 "run.sh: the same model twice is a usage error"   "$REPO/scripts/eval/run.sh" --model a --model a
+usage64 "run.sh: the same case file twice is a usage error" "$REPO/scripts/eval/run.sh" --model a \
+    --cases "$REPO/scripts/eval/cases/summarize.json" --cases "$REPO/scripts/eval/cases/summarize.json"
+
 # --- guards must actually guard. Kills deletion of the three raise ValueError. -----
+# Requires 64, not merely non-zero. The round-5 sweep deleted label_is's gold guard and the
+# suite stayed green: with the guard gone the check CRASHED (AttributeError, exit 1), and a
+# helper that accepts any non-zero exit cannot tell a refusal from a crash — which is the
+# distinction check.py's own docstring draws.
 guard() {  # guard <description> <check> <expect-json>
-    local desc="$1" name="$2" spec="$3"
-    if printf 'x' | python3 "$CHECK" --check "$name" --expect "$spec" >/dev/null 2>&1; then
-        echo "  FAIL — $desc (exited 0; a malformed expectation was accepted)"; FAIL=$((FAIL + 1))
-    else
+    local desc="$1" name="$2" spec="$3" rc
+    printf 'x' | python3 "$CHECK" --check "$name" --expect "$spec" >/dev/null 2>&1; rc=$?
+    if [ "$rc" = "64" ]; then
         echo "  ok   — $desc"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL — $desc (exit $rc, wanted 64: a malformed expectation is a usage error, not a crash)"; FAIL=$((FAIL + 1))
     fi
 }
 guard "sentence_count rejects a missing max"          sentence_count  '{}'
@@ -622,6 +728,8 @@ guard "sentence_count rejects a boolean max"          sentence_count  '{"max":tr
 guard "script_purity rejects an unimplemented script" script_purity   '{"script":"simplified"}'
 guard "category_member rejects an empty list"         category_member '{"categories":[]}'
 guard "category_member rejects a missing list"        category_member '{}'
+guard "label_is rejects a missing expected"           label_is        '{}'
+guard "label_is rejects an empty expected"            label_is        '{"expected":"  "}'
 
 # --- --spec with a MIXED verdict. Kills all(...) -> any(...). ---------------------
 # Every previous --spec fixture was uniformly true or uniformly false, so the two are
@@ -640,6 +748,79 @@ else
     echo "  FAIL — mixed-verdict spec returned '$mixed', expected '[False, True]|False'"
     FAIL=$((FAIL + 1))
 fi
+
+# ══ THE CANARY ═══════════════════════════════════════════════════════════════════════
+#
+# Everything above is a check-level assertion against $CHECK. In canary mode that is all
+# that runs, and the trap prints how many failed. Stop here in that mode — the block below
+# would recurse.
+if [ -n "$CANARY_MODE" ]; then exit 0; fi
+
+# The count (EXPECTED_CASES) catches DELETION. Round 4's verify showed it cannot catch
+# WEAKENING: neuter the assertion helper (`if [ "$actual" = "$expect" ]` → `if true`) and this
+# file stays at its full count, byte-identical to baseline, while a defect seeded into
+# check.py that 11 cases used to catch is caught by 2. Move a boundary fixture back off the
+# boundary: same count. Hollow a 21-entry corpus to one: same count. The number counts
+# PASS++ calls, not what each call asserted.
+#
+# The only thing that can see weakening is running the suite against something broken and
+# requiring it to notice — which is what the offline mutation sweep does, and why the sweep
+# kept finding what the suite could not. So a miniature of the sweep lives here. Three
+# mutants of check.py, built fresh each run; the suite re-invokes itself against each and
+# must fail EXACTLY the pinned number of times:
+#
+#   always-ok     every check says ok    → pins the not-ok fixtures AND the helper
+#   always-notok  every check says not-ok → pins the ok fixtures
+#   off-by-one    `<= ceiling` → `<= ceiling + 1` → pins the BOUNDARY fixtures, the ones
+#                 the header of this file forbids moving and no count could see
+#
+# The three constants are updated ON PURPOSE when fixtures change, like EXPECTED_CASES. What
+# this does not close, stated rather than glossed: an edit that moves a fixture and updates
+# the constant to match is a deliberate edit, and no self-test distinguishes it from a
+# correct one. This is the boundary; the suite stops claiming anything past it.
+CANARY_ALWAYS_OK=92
+CANARY_ALWAYS_NOTOK=71
+CANARY_OFF_BY_ONE=8
+
+canary() {  # canary <label> <mutant-path> <expected fails>
+    local label="$1" mutant="$2" want="$3" got
+    got=$(EVAL_CHECKS_CANARY="$mutant" bash "${BASH_SOURCE[0]}" 2>/dev/null | sed -n 's/^CANARY_FAILS=//p' | tail -1)
+    if [ "${got:-x}" = "$want" ]; then
+        echo "  ok   — canary: against $label, exactly $want assertion(s) fail"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL — canary: against $label, ${got:-?} assertion(s) failed, expected $want."
+        echo "         Fewer means the suite was WEAKENED (a fixture moved off-boundary, a corpus"
+        echo "         hollowed, the assertion helper neutered); more means a fixture was added."
+        echo "         If deliberate, update the CANARY_* constant; if not, find what weakened."
+        FAIL=$((FAIL + 1))
+    fi
+}
+MUT="$SUITE_TMP/mutants"; mkdir -p "$MUT"
+python3 - "$CHECK" "$MUT" <<'INNER'
+import pathlib, sys
+src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+out = pathlib.Path(sys.argv[2])
+wrap = """
+
+# -- canary mutant: every check returns ok=%s --
+for _k in list(CHECKS):
+    CHECKS[_k] = (lambda f: (lambda t, e: dict(f(t, e), ok=%s)))(CHECKS[_k])
+"""
+# The wrapper must run BEFORE the entry point, not be appended after it — appended, it sat
+# below `if __name__ == "__main__": sys.exit(main())` and never executed, and both canaries
+# reported zero failures on their first run. A canary that cannot fire is the round-1 shape.
+entry = 'if __name__ == "__main__":'
+assert src.count(entry) == 1, "mutant builder: entry point not found"
+(out / "always_ok.py").write_text(src.replace(entry, wrap % ("True", "True") + "\n" + entry), encoding="utf-8")
+(out / "always_notok.py").write_text(src.replace(entry, wrap % ("False", "False") + "\n" + entry), encoding="utf-8")
+needle = '"ok": observed <= ceiling,'
+assert src.count(needle) == 1, "off-by-one mutant: anchor not found"
+(out / "off_by_one.py").write_text(src.replace(needle, '"ok": observed <= ceiling + 1,'), encoding="utf-8")
+INNER
+canary "always-ok"    "$MUT/always_ok.py"    "$CANARY_ALWAYS_OK"
+canary "always-notok" "$MUT/always_notok.py" "$CANARY_ALWAYS_NOTOK"
+canary "off-by-one"   "$MUT/off_by_one.py"   "$CANARY_OFF_BY_ONE"
 
 # ── rpc.py score: the envelope handling, also hermetic ────────────────────────────
 # check.py's verdicts are mutation-proven above, but nothing yet showed that a FAILING
@@ -832,6 +1013,22 @@ rowcheck "an unmatched reply satisfies expect_row {matched:false}" true \
 rowcheck "a forced label violates expect_row {matched:false}" false \
     '{"task":"classify","category":"bug","matched":true,"raw_response":"bug"}'
 
+# --- rpc.py append: the write itself refuses a symlink, not only the pre-check ---------
+# The round-5 mutation batch removed O_NOFOLLOW from the appender and the suite stayed green:
+# every end-to-end case was stopped earlier by run.sh's check-then-write refusal, so the flag
+# that closes the race window was never exercised. This hits the appender directly, with no
+# pre-check in front of it — the only way to see that the OPEN refuses a symlink.
+APP_VICTIM="$SUITE_TMP/app-victim-$RANDOM.txt"; printf 'PRECIOUS' > "$APP_VICTIM"
+APP_LINK="$SUITE_TMP/app-link-$RANDOM.jsonl"; ln -s "$APP_VICTIM" "$APP_LINK"
+printf '{"case":"x"}\n' | python3 "$RPC" append --out "$APP_LINK" >/dev/null 2>&1; rc=$?
+if [ "$rc" != "0" ] && [ "$(cat "$APP_VICTIM")" = "PRECIOUS" ]; then
+    echo "  ok   — rpc.py append refuses to write through a symlink (O_NOFOLLOW, the write itself)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — rpc.py append followed a symlink: exit $rc, victim now '$(head -c 20 "$APP_VICTIM")'"
+    FAIL=$((FAIL + 1))
+fi
+
 # --- rpc.py summarize: the guard that failed, made testable -----------------------
 # The guard used to be inline bash counting rows APPENDED, with the comment "a green eval
 # that ran no cases is the reporting-without-checking failure in its purest form". A
@@ -840,25 +1037,28 @@ rowcheck "a forced label violates expect_row {matched:false}" false \
 # state it was written to detect, reproduced against the real binary.
 #
 # It now lives here as a pure function of the output file, so it can be tested at all.
-sumjson() {  # THE EXIT-CODE CONTRACT (settled this round; round 2 found the old split indefensible).
+# THE EXIT-CODE CONTRACT (settled by the maintainer between rounds 2 and 3; 64 added in 4).
 #
-#   0  the run happened and every mechanical check passed
-#   2  the run happened and there are findings — a model did badly, which is DATA
-#   1  the run did not happen: nothing measured, or a tool/transport/malformed failure
+#   0   the run happened and every mechanical check passed
+#   2   the run happened and there are findings — a model did badly, which is DATA
+#   1   the run did not happen: nothing measured, a tool/transport/malformed failure, or
+#       a row count that is not what the run owed
+#   64  usage error, in every program of the harness (round 4 fixed run.sh alone)
 #
 # Round 2's objection was that a tool error exited 1 while a model returning an empty
 # string exited 0 — "the difference is which layer the emptiness happened at, not what it
 # means". Three codes make the axis the right one: 1 says the measurement failed, 2 says
-# the measurement succeeded and the answer was poor. `make eval` no longer reports success
+# the measurement succeeded and the answer was poor. `make eval` does not report success
 # for a run in which every check failed, and does not fail merely because a model is
 # imperfect, which it always is.
-#
-# sumjson <description> <expected exit> <expected measured> <jsonl body>
-    local desc="$1" want_rc="$2" want_measured="$3" body="$4"
+SUM_OUT=""   # last summarize output, for assertions on WHAT was printed
+sumjson() {  # sumjson <description> <expected exit> <expected measured> <jsonl body> [owed]
+    local desc="$1" want_rc="$2" want_measured="$3" body="$4" owed="${5:-0}"
     local f out rc measured
     f="$SUITE_TMP/sum-$$-$RANDOM.jsonl"
     printf '%s' "$body" > "$f"
-    out=$(python3 "$RPC" summarize --out "$f" 2>&1); rc=$?
+    out=$(python3 "$RPC" summarize --out "$f" --expected "$owed" 2>&1); rc=$?
+    SUM_OUT="$out"
     measured=$(printf '%s' "$out" | sed -nE 's/.*measured=([0-9]+).*/\1/p' | head -1)
     if [ "$rc" = "$want_rc" ] && [ "${measured:-x}" = "$want_measured" ]; then
         echo "  ok   — $desc"; PASS=$((PASS + 1))
@@ -900,6 +1100,86 @@ sumjson "a run with a recorded tool error exits 1 — the measurement did not ha
 '{"case":"a","error":null,"mechanical_ok":true,"checks":[],"human_review":[]}
 {"case":"b","error":"Error: down","mechanical_ok":null,"checks":[]}
 '
+# --- --expected: the round-4 accounting, which no test passed until now ------------
+# Round 4's verify: `--expected` was passed in two places, both in run.sh, and in NO test —
+# every sumjson call omitted it, which the code itself documents as "0 disables the check".
+# Deleting the shortfall block left the suite at 122/0. The headline structural fix was
+# the round-1 shape: asserted, not measured.
+sumjson "short of what the run owed, with no error rows, exits 1" 1 4 \
+'{"case":"a","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"b","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"c","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"d","error":null,"mechanical_ok":true,"checks":[]}
+' 5
+sumjson "exactly what the run owed, all clean, exits 0" 0 2 \
+'{"case":"a","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"b","error":null,"mechanical_ok":true,"checks":[]}
+' 2
+# A9: the count is a set equality, not a floor. Six rows against five owed is a duplicated
+# model or case file, and round 4 accepted it at exit 0.
+sumjson "MORE rows than the run owed exits 1" 1 6 \
+'{"case":"a","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"b","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"c","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"d","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"e","error":null,"mechanical_ok":true,"checks":[]}
+{"case":"f","error":null,"mechanical_ok":true,"checks":[]}
+' 5
+
+# A8: ONE definition of complete, exposed as its own subcommand so the publish decision in
+# run.sh and the verdict in summarize cannot drift. Round 4 had two: the publish gate said
+# "measured>=1 and no errors", summarize said "and total == owed", and `mv` ran before the
+# stricter one — so README's "only ever holds a complete run" was overstated.
+complete_case() {  # complete_case <description> <expected exit> <jsonl body> <owed>
+    local desc="$1" want="$2" body="$3" owed="$4" f rc
+    f="$SUITE_TMP/cmp-$$-$RANDOM.jsonl"; printf '%s' "$body" > "$f"
+    python3 "$RPC" complete --out "$f" --expected "$owed" >/dev/null 2>&1; rc=$?
+    if [ "$rc" = "$want" ]; then echo "  ok   — $desc"; PASS=$((PASS + 1))
+    else echo "  FAIL — $desc (exit $rc, wanted $want)"; FAIL=$((FAIL + 1)); fi
+}
+complete_case "complete: owed rows, all measured" 0 \
+'{"case":"a","error":null}
+{"case":"b","error":null}
+' 2
+complete_case "complete: short of owed with no error rows is NOT complete" 1 \
+'{"case":"a","error":null}
+' 2
+complete_case "complete: an error row makes it incomplete" 1 \
+'{"case":"a","error":null}
+{"case":"b","error":"transport: no response"}
+' 2
+complete_case "complete: more than owed is not complete either" 1 \
+'{"case":"a","error":null}
+{"case":"b","error":null}
+{"case":"c","error":null}
+' 2
+
+# --- A4: server-authored strings cannot forge output lines ------------------------
+# Round 3's fix stripped C0 controls EXCEPT tab and newline, so a model id containing "\n"
+# still split the flagged-rows table into a forged second line; and it was applied to
+# `model` only. Everything the server or the case file authored goes through it now.
+# (The fixture is built by python so no escape byte has to appear in this file.)
+FORGED_ROW=$(python3 -c 'import json; print(json.dumps({"case":"a","error":None,"mechanical_ok":False,"checks":[{"check":"non_empty","ok":False}],"model":"m\n    forged  [x]  clean\x1b[2K","human_review":[]}))')
+sumjson "a model id carrying LF and ESC renders on one line with no escape byte" 2 1 "$FORGED_ROW
+" 1
+if printf '%s' "$SUM_OUT" | python3 -c 'import sys; sys.exit(0 if "\x1b" in sys.stdin.read() else 1)'; then
+    echo "  FAIL — an ESC byte from a server-authored model id reached the terminal"; FAIL=$((FAIL + 1))
+elif printf '%s\n' "$SUM_OUT" | grep -q '^    forged'; then
+    echo "  FAIL — a newline in a server-authored model id forged a second output line"; FAIL=$((FAIL + 1))
+else
+    echo "  ok   — LF and ESC in a server-authored string are neutralised before printing"; PASS=$((PASS + 1))
+fi
+# A11: operator-authored human_review is stripped of controls but never truncated. The one
+# declared limit that reaches the operator was 356 characters and was cut mid-sentence.
+LONG_ROW=$(python3 -c 'import json; q="LIMIT: " + "the server matched field is substring containment, "*8 + "READ THE TEXT BEFORE BELIEVING THIS FLAG."; print(json.dumps({"case":"a","error":None,"mechanical_ok":True,"checks":[],"human_review":[q]}))')
+sumjson "a long human_review line is printed whole" 0 1 "$LONG_ROW
+" 1
+if printf '%s' "$SUM_OUT" | grep -q 'READ THE TEXT BEFORE BELIEVING THIS FLAG'; then
+    echo "  ok   — human_review is not truncated (its last clause reached the terminal)"; PASS=$((PASS + 1))
+else
+    echo "  FAIL — human_review was truncated; the actionable clause was lost"; FAIL=$((FAIL + 1))
+fi
+
 # human_review is the half issue #1 asks NOT to be auto-judged, and run.sh never printed
 # it — `grep -n human_review scripts/eval/run.sh` was zero hits. The questions were
 # carried into the file and then never put in front of anyone.
@@ -958,6 +1238,33 @@ if [ ! -x "$STUB" ]; then
 else
     runsh_case "a run where 4 of 5 cases time out does NOT exit 0" 1 silent 1
     runsh_case "a run whose server dies mid-way does NOT exit 0"   1 die    1
+    # A1: the TOOL-error branch — round 1's entire subject — was unreachable in this suite
+    # because the stub only ever produced transport failures. Round 4 shipped `re.sub` one
+    # line above `import re` on exactly that branch, so every recorded tool error printed a
+    # Python traceback instead of `tool error — …`, and the sanitiser on that path never ran.
+    TE_OUT=$(OMLX_EVAL_BINARY="$STUB" STUB_MODE=toolerror STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+             "$RUNSH" --model stub --out "$SUITE_TMP/toolerr-$RANDOM.jsonl" \
+             --cases "$REPO/scripts/eval/cases/summarize.json" 2>&1); TE_RC=$?
+    if [ "$TE_RC" = "1" ] && printf '%s' "$TE_OUT" | grep -q 'tool error — ' \
+       && ! printf '%s' "$TE_OUT" | grep -q 'Traceback'; then
+        echo "  ok   — a tool error prints its sanitised line and the run exits 1"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL — tool-error branch: exit $TE_RC, output: $(printf '%s' "$TE_OUT" | grep -m1 -E 'Traceback|tool error|NameError')"; FAIL=$((FAIL + 1))
+    fi
+    # A4 (run.sh side): the per-case line prints the server's model id. A stub id carrying
+    # OSC/CSI and a newline must not reach the terminal raw. STUB_MODEL is built by python
+    # so the escape bytes never appear in this file.
+    ESC_OUT=$(OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+              STUB_MODEL="$(python3 -c 'print("m\x1b]0;TITLE\x07\x1b[2K\nforged", end="")')" \
+              "$RUNSH" --model stub --out "$SUITE_TMP/esc-$RANDOM.jsonl" \
+              --cases "$REPO/scripts/eval/cases/summarize.json" 2>&1)
+    if printf '%s' "$ESC_OUT" | python3 -c 'import sys; sys.exit(0 if "\x1b" in sys.stdin.read() else 1)' \
+       || printf '%s\n' "$ESC_OUT" | grep -q '^forged'; then
+        echo "  FAIL — a server-authored model id reached run.sh's terminal output with escapes/newline"; FAIL=$((FAIL + 1))
+    else
+        echo "  ok   — run.sh neutralises escapes and newlines in the served model id"; PASS=$((PASS + 1))
+    fi
+
     # The stub's fixed reply legitimately fails one case's max_sentences:1, so this run has
     # a finding. That is the point: a fully-answered run exits 2 (findings), never 1
     # (the measurement did not happen). Distinguishing those two is the contract.
@@ -1025,6 +1332,44 @@ else
         echo "  FAIL — the incomplete run's rows were discarded"
         FAIL=$((FAIL + 1))
     fi
+    # A7: a leftover .partial must not make the harness single-shot. Round 4 refused to run
+    # while one existed, so after any imperfect run — the common case with small models,
+    # and the case this harness exists to study — every later `make eval` was blocked.
+    # The evidence is kept under a timestamped name and the run proceeds.
+    OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+        "$RUNSH" --model stub --out "$PREV" --cases "$REPO/scripts/eval/cases/summarize.json" >/dev/null 2>&1
+    rc=$?
+    kept=$(ls "$PREV".partial.* 2>/dev/null | head -1)
+    if [ "$rc" = "2" ] && [ -n "$kept" ] && grep -q 'meeting-coverage' "$kept"; then
+        echo "  ok   — a later run proceeds past a leftover .partial and keeps it under a timestamped name"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL — leftover .partial: second run exited $rc, kept=${kept:-none}"
+        FAIL=$((FAIL + 1))
+    fi
+    # C2: the staging guards round 4 added had no test — deleting all three was invisible.
+    # A symlink planted at <out>.partial must be refused with its target untouched.
+    VICTIM="$SUITE_TMP/victim-$RANDOM.txt"; printf 'PRECIOUS' > "$VICTIM"
+    SYM_OUT="$SUITE_TMP/symout-$RANDOM.jsonl"; ln -s "$VICTIM" "$SYM_OUT.partial"
+    OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+        "$RUNSH" --model stub --out "$SYM_OUT" --cases "$REPO/scripts/eval/cases/summarize.json" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" = "1" ] && [ "$(cat "$VICTIM")" = "PRECIOUS" ]; then
+        echo "  ok   — a symlink at <out>.partial is refused and its target is untouched"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL — symlink at .partial: exit $rc, victim now '$(head -c 20 "$VICTIM")'"
+        FAIL=$((FAIL + 1))
+    fi
+    DIR_OUT="$SUITE_TMP/dirout-$RANDOM.jsonl"; mkdir -p "$DIR_OUT.partial"
+    OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+        "$RUNSH" --model stub --out "$DIR_OUT" --cases "$REPO/scripts/eval/cases/summarize.json" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" = "1" ]; then
+        echo "  ok   — a directory at <out>.partial is refused"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL — a directory at <out>.partial: exit $rc"; FAIL=$((FAIL + 1))
+    fi
 fi
 
 # --- the served model id, through the REAL binary --------------------------------
@@ -1069,34 +1414,66 @@ print(rows[0]["model"] if rows else "NO ROWS")' "$SUITE_TMP/served.jsonl" 2>/dev
     fi
 fi
 
-# THE SHIPPED CASE FILES ARE A CALL SITE, AND ROUND 3 LEFT IT UNTESTED. Deleting
-# `expect_row` from classify-none-of-the-above left the suite BYTE-IDENTICAL at 112/0, and
-# deleting `label_is` from all three classify cases did too — the two mechanisms added to
-# satisfy requirements 6a and 6b were tested only against fixtures the suite builds itself.
-# Same shape as round 2's Swift call site, one level down.
-shipped=$(python3 - "$REPO/scripts/eval/cases/classify.json" <<'INNER'
+# THE SHIPPED CASE FILES ARE A CALL SITE. Round 3 left it untested: deleting `expect_row`
+# from classify-none-of-the-above left the suite byte-identical. Round 4 added a guard that
+# read classify.json ONLY, asserted two requirements, and accepted the old `label_is` design
+# through an `or` — so deleting `script_purity` from the shipped Chinese case (the one
+# requirement issue #1 calls non-negotiable) was still invisible.
+#
+# So: a MANIFEST. Every shipped case, and every mechanical expectation it must carry. One
+# assertion per case, so a failure names the case; and every case in every file must be
+# listed, so adding a case is a manifest edit rather than an unguarded addition.
+MANIFEST='
+summarize.json  meeting-coverage-2sentence     sentence_count no_preamble
+summarize.json  traditional-chinese-purity     script_purity sentence_count no_preamble
+summarize.json  numbers-one-sentence           sentence_count no_preamble
+summarize.json  focus-open-questions           sentence_count no_preamble
+summarize.json  short-source-preamble-bait     no_preamble sentence_count
+classify.json   classify-negative-hedged       category_member row:category
+classify.json   classify-bare-label-discipline category_member row:category
+classify.json   classify-none-of-the-above     row:matched
+'
+while read -r cfile cid needs; do
+    [ -n "$cfile" ] || continue
+    missing=$(python3 - "$REPO/scripts/eval/cases/$cfile" "$cid" $needs <<'INNER'
 import json, sys
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
-problems = []
-accuracy = [c["id"] for c in doc["cases"]
-            if "category" in (c.get("expect_row") or {}) or "label_is" in (c.get("expect", {}))]
-matched  = [c["id"] for c in doc["cases"] if "matched" in (c.get("expect_row") or {})]
-if len(accuracy) < 2:
-    problems.append(f"requirement 6a: only {len(accuracy)} case(s) assert accuracy")
-if not matched:
-    problems.append("requirement 6b: no case asserts on `matched`")
-for c in doc["cases"]:
-    if not c.get("expect") and not c.get("expect_row"):
-        problems.append(f"{c['id']}: no mechanical expectation at all")
-print("; ".join(problems))
+case = next((c for c in doc["cases"] if c["id"] == sys.argv[2]), None)
+if case is None:
+    print("CASE MISSING"); raise SystemExit
+absent = []
+for need in sys.argv[3:]:
+    if need.startswith("row:"):
+        if need[4:] not in (case.get("expect_row") or {}): absent.append(need)
+    elif need not in (case.get("expect") or {}):
+        absent.append(need)
+print(" ".join(absent))
 INNER
 )
-if [ -z "$shipped" ]; then
-    echo "  ok   — the shipped classify cases carry the mechanisms 6a and 6b are met by"
-    PASS=$((PASS + 1))
+    if [ -z "$missing" ]; then
+        echo "  ok   — shipped $cfile/$cid carries: $needs"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL — shipped $cfile/$cid is missing: $missing"; FAIL=$((FAIL + 1))
+    fi
+done <<< "$MANIFEST"
+unlisted=$(python3 - "$REPO/scripts/eval/cases" <<INNER
+import glob, json, os
+listed = set()
+for line in """$MANIFEST""".splitlines():
+    parts = line.split()
+    if parts: listed.add((parts[0], parts[1]))
+extra = []
+for path in sorted(glob.glob(os.path.join("$REPO/scripts/eval/cases", "*.json"))):
+    for c in json.load(open(path, encoding="utf-8"))["cases"]:
+        if (os.path.basename(path), c["id"]) not in listed:
+            extra.append(os.path.basename(path) + "/" + c["id"])
+print(",".join(extra))
+INNER
+)
+if [ -z "$unlisted" ]; then
+    echo "  ok   — every shipped case is in the manifest (adding one is a manifest edit)"; PASS=$((PASS + 1))
 else
-    echo "  FAIL — shipped classify.json no longer covers what it claims: $shipped"
-    FAIL=$((FAIL + 1))
+    echo "  FAIL — shipped case(s) not in the manifest: $unlisted"; FAIL=$((FAIL + 1))
 fi
 
 # ...and expect_row's field names need the guard `expect` already has.
@@ -1142,29 +1519,21 @@ print(",".join(missing))' "$cf" "$REPO/scripts/eval" "$CHECK" 2>&1)
     fi
 done
 
-# THE ONE QUANTITY THAT CANNOT BE PUSHED FURTHER OUT.
+# THE COUNT, AND WHAT IT IS NOT.
 #
 # Round 3 found every guard in this file individually deletable with the suite still
-# exiting 0: the per-character probe loop, the coverage assertion, and both corpora. `make
-# test`'s `test-shell` reads only the exit status, so "112 passed" silently becoming "110
-# passed" is invisible — and this repo has already recorded one accident where an
-# interrupted mutation sweep blessed a shrunken baseline as correct.
+# exiting 0. Round 4 answered with EXPECTED_CASES (defined at the top, enforced in the EXIT
+# trap) and called it "where the recursion stops". Round 4's verify then showed two ways
+# past it without touching it: exit before it runs (fixed — it is in the trap now), and
+# WEAKEN instead of delete. `if [ "$actual" = "$expect" ]` → `if true` left this file at
+# 122 passed, byte-identical to baseline, because the number counts PASS++ calls, not what
+# each call asserted. Moving a boundary fixture back off the boundary, or hollowing a
+# 21-entry corpus to one, are the same: the count is invariant under weakening.
 #
-# Every layer above this one can be guarded by another layer. This is where the recursion
-# stops: the suite counts itself. Adding or removing a case means updating this number ON
-# PURPOSE, which is the whole point.
-EXPECTED_CASES=122
-echo
-echo "  $PASS passed, $FAIL failed, $SKIP skipped"
-TOTAL=$((PASS + FAIL + SKIP))
-if [ "$TOTAL" -ne "$EXPECTED_CASES" ]; then
-    echo "  FAIL — suite ran $TOTAL case(s), expected $EXPECTED_CASES."
-    echo "         A guard was added or removed. If deliberate, update EXPECTED_CASES;"
-    echo "         if not, something deleted coverage and every remaining case still passed."
-    FAIL=$((FAIL + 1))
-fi
-if [ "$SKIP" -gt 0 ] && [ -n "${REQUIRE_FULL_SUITE:-}" ]; then
-    echo "  REQUIRE_FULL_SUITE set — a skip is a failure"
-    exit 1
-fi
-[ "$FAIL" -eq 0 ] || exit 1
+# So the count catches DELETION, and only that. Weakening is caught by the canary further
+# up — the suite re-run against deliberately broken copies of check.py, required to notice
+# a pinned number of times. Neither is a claim about a suite that cannot be weakened by
+# someone editing both the fixture and the constant; that is a deliberate edit, and no
+# self-test distinguishes it from a correct one.
+#
+# The accounting itself is in finish_suite (EXIT trap). Nothing here — deliberately.

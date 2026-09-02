@@ -14,7 +14,9 @@ in the terms this file cannot enforce.
 Exit status is about whether the check RAN, not about its verdict:
 
     0   the check ran; read "ok" from the JSON on stdout
-    2   usage error — unknown check name, malformed --expect, missing argument
+    64  usage error — unknown check name, malformed --expect, bad flag (EX_USAGE, the same
+        code every program in the harness uses; 2 is reserved by the exit-code contract for
+        "the run happened and there are findings")
 
 A harness that conflates those two reports a crash as a finding, so they are kept
 apart deliberately.
@@ -24,6 +26,17 @@ import argparse
 import json
 import re
 import sys
+
+EX_USAGE = 64
+
+
+class Parser(argparse.ArgumentParser):
+    """argparse's own usage exit is 2, which the harness reserves for "findings"."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        sys.exit(EX_USAGE)
 
 # ── sentence_count ───────────────────────────────────────────────────────────────
 # Deliberately simple, and its limits are stated rather than papered over. A `.`
@@ -142,7 +155,11 @@ _PREAMBLE_PATTERNS = [
     # the requester about work done ON THEIR BEHALF. That, not the verb, is the meta signal.
     r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,14}"
     r"(?:摘要|總結|总结|翻譯|翻译|改寫|改写)",
-    r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,8}(?:幫你|幫您|帮你|帮您|為你|为你|替你)",
+    # …and 幫你 alone is not it either: 「我會幫你確認會議時間」 is an offer to do a task, which
+    # is content. Round 4 flagged it. The meta signal is a COMPLETION REPORT on the requester's
+    # behalf — 幫你…好了 / 完成 — the model saying the work you asked for is done.
+    r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,8}(?:幫你|幫您|帮你|帮您|為你|为你|替你)"
+    r"[^。！？\n]{0,8}(?:好了|完成|做好|弄好|寫好|写好)",
     r"(?:摘要|總結|总结)(?:如下|如下：)",
 ]
 _PREAMBLE_RE = re.compile("|".join(_PREAMBLE_PATTERNS), re.IGNORECASE)
@@ -324,7 +341,7 @@ def run_one(name, text, expect):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
+    p = Parser(description=__doc__)
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--check", help="run a single named check")
     g.add_argument("--spec", help='JSON object of {check_name: expect_object} — what run.sh calls')
@@ -364,10 +381,10 @@ def main(argv=None):
         # An unknown check name is a typo in a case file. Failing loudly is the whole
         # point: a silently-skipped check is an eval that reports without checking.
         print(f"unknown check: {e.args[0]} (known: {', '.join(sorted(CHECKS))})", file=sys.stderr)
-        return 2
+        return EX_USAGE
     except (ValueError, json.JSONDecodeError) as e:
         print(f"bad expectation: {e}", file=sys.stderr)
-        return 2
+        return EX_USAGE
     return 0
 
 

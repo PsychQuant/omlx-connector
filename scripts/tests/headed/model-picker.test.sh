@@ -42,19 +42,19 @@ echo "headed/model-picker"
 command -v tmux >/dev/null 2>&1 || {
     skip "tmux not installed (brew install tmux) — headed path cannot be driven"
     echo; echo "  $PASS passed, $FAIL failed, $SKIP skipped"
-    [ -n "${REQUIRE_FULL_SUITE:-}" ] && { echo "  REQUIRE_FULL_SUITE set — a skip is a failure"; exit 1; }
+    [ "${REQUIRE_FULL_SUITE:-}" = "1" ] && { echo "  REQUIRE_FULL_SUITE set — a skip is a failure"; exit 1; }
     exit 0
 }
 [ -x "$BINARY" ] || {
     skip "omlx-claude not built (run: swift build --product omlx-claude)"
     echo; echo "  $PASS passed, $FAIL failed, $SKIP skipped"
-    [ -n "${REQUIRE_FULL_SUITE:-}" ] && exit 1
+    [ "${REQUIRE_FULL_SUITE:-}" = "1" ] && exit 1
     exit 0
 }
 curl -s -m 5 "$OMLX_URL/v1/models" >/dev/null 2>&1 || {
     skip "no oMLX server at $OMLX_URL — the picker has nothing to list"
     echo; echo "  $PASS passed, $FAIL failed, $SKIP skipped"
-    [ -n "${REQUIRE_FULL_SUITE:-}" ] && exit 1
+    [ "${REQUIRE_FULL_SUITE:-}" = "1" ] && exit 1
     exit 0
 }
 
@@ -163,7 +163,7 @@ fi
 
 echo
 echo "  $PASS passed, $FAIL failed, $SKIP skipped"
-if [ "$SKIP" -gt 0 ] && [ -n "${REQUIRE_FULL_SUITE:-}" ]; then
+if [ "$SKIP" -gt 0 ] && [ "${REQUIRE_FULL_SUITE:-}" = "1" ]; then
     echo "  REQUIRE_FULL_SUITE set — a skip is a failure"
     exit 1
 fi

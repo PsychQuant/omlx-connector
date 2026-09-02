@@ -39,6 +39,13 @@ if [ "${SKIP_NOTARIZE:-}" != "1" ]; then
     : "${NOTARY_PROFILE:?NOTARY_PROFILE not set — see README 'Signing & notarization'}"
 fi
 
+# The hermetic suite gates the release. CLAUDE.md said "set REQUIRE_FULL_SUITE=1 on a release
+# path" for four review rounds while no release path ran the suite at all. This one does:
+# the suite needs no oMLX server (so signing cannot fail for want of one), and the single
+# case that needs DEVELOPER_ID has it here — so a skip is a failure, as the variable says.
+echo "→ running the hermetic test suite (REQUIRE_FULL_SUITE=1)"
+REQUIRE_FULL_SUITE=1 make test
+
 # Anchored and comment-excluding. A plain grep takes the FIRST match anywhere in the
 # file, so a commented-out `/// static let current = "0.3.0"` above a real 0.4.0 would
 # pass the mirror check while both binaries reported 0.4.0 and the release was cut as

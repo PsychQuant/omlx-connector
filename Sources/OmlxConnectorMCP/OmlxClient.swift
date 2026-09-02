@@ -278,7 +278,9 @@ actor OmlxClient: OmlxClienting {
     /// `resolvedModel` left the entire suite green — the decode was covered, the line using
     /// it was not.
     static func servedModel(reported: String?, requested: String) -> String {
-        guard let reported, !reported.trimmingCharacters(in: .whitespaces).isEmpty else {
+        // `.whitespacesAndNewlines`, not `.whitespaces`: the latter has no LF, so a server
+        // echoing `"model": "\n"` passed this guard and erased the requested id (round 4).
+        guard let reported, !reported.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return requested
         }
         return reported

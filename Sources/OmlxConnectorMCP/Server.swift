@@ -307,6 +307,37 @@ final class OmlxConnectorServer {
         return try render(result, extra: ["task": "rewrite"])
     }
 
+    /// Which of the caller's categories a reply names. An exact match — after stripping the
+    /// decoration small models add ("Category: X.", quotes, brackets) — wins; otherwise the
+    /// UNIQUE category the reply contains, where a contained label that is itself a substring
+    /// of another contained label does not count ("bug" inside "bug report"); otherwise none.
+    ///
+    /// The previous rule was `categories.first { raw.contains($0) }`: the first offered label
+    /// appearing anywhere in the reply, in list order. "This is not a bug — it is a feature
+    /// request" resolved to `bug`, so the eval harness's accuracy signal scored a wrong answer
+    /// as correct (issue #1, round-4 verify). A reply that names two options has not chosen
+    /// one: that is `matched: false`, which is also the right outcome for an honest refusal
+    /// that names the options it rejects. What this still cannot do is tell "not X; Y" from a
+    /// wrong answer — but that now yields an unmatched row rather than a matched wrong one,
+    /// which is the safe direction, and the harness's case file says so.
+    static func matchCategory(_ raw: String, in categories: [String]) -> String? {
+        let decoration = CharacterSet.whitespacesAndNewlines.union(
+            CharacterSet(charactersIn: ".。!！?？,，、:：;；\"'“”‘’`*_~「」『』（）()〔〕[]【】《》〈〉{}"))
+        func norm(_ s: String) -> String {
+            s.trimmingCharacters(in: decoration).lowercased()
+        }
+        let reply = norm(raw)
+        if let exact = categories.first(where: { norm($0) == reply }) { return exact }
+
+        let contained = categories.filter { raw.localizedCaseInsensitiveContains($0) }
+        let distinct = contained.filter { candidate in
+            !contained.contains { other in
+                other != candidate && other.localizedCaseInsensitiveContains(candidate)
+            }
+        }
+        return distinct.count == 1 ? distinct[0] : nil
+    }
+
     private func handleClassify(_ args: [String: Value]) async throws -> String {
         guard let text = args["text"]?.stringValue, !text.isEmpty else {
             throw ToolError.invalidParameter("text is required")
@@ -348,7 +379,7 @@ final class OmlxConnectorServer {
         // trailing period). Match back onto the caller's list so the return value is
         // always one of the strings they supplied, and say so when it is not.
         let raw = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matched = categories.first { raw.localizedCaseInsensitiveContains($0) }
+        let matched = Self.matchCategory(raw, in: categories)
 
         let categoryValue: Any = matched ?? NSNull()
         return try formatJSON([

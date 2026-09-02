@@ -266,3 +266,53 @@ final class ServedModelIdTests: XCTestCase {
         XCTAssertEqual(OmlxClient.servedModel(reported: "", requested: "qwen3-4b"), "qwen3-4b")
     }
 }
+
+// MARK: - Classify matching: exact, then unique containment, then unmatched
+
+/// `handleClassify` used `categories.first { raw.contains($0) }` — the first offered label
+/// appearing ANYWHERE in the reply, in the caller's list order. So "This is not a bug — it is
+/// a feature request" resolved to `bug`, and the eval harness's accuracy signal scored a wrong
+/// answer as correct (round-4 verify, requirement 6a). The rule is now: an exact match wins;
+/// otherwise the UNIQUE contained label; otherwise unmatched.
+final class ClassifyMatchingTests: XCTestCase {
+    private func classify(_ reply: String, _ categories: [String]) async throws -> String {
+        let server = await OmlxConnectorServer(client: StubClient(text: reply))
+        return try await server.executeToolCall(
+            name: "local_classify",
+            arguments: ["text": .string("x"), "categories": .array(categories.map { .string($0) })])
+    }
+
+    func testTwoLabelsMentionedIsUnmatched() async throws {
+        let json = try await classify("This is not a bug — it is a feature request.",
+                                      ["bug", "feature request", "question"])
+        XCTAssertTrue(json.contains("\"matched\" : false"), json)
+    }
+
+    func testExactMatchWinsOverContainmentOfAShorterLabel() async throws {
+        // Containment alone picks "bug" (it appears first and is contained); the reply IS
+        // "bug report", so that is the answer.
+        let json = try await classify("bug report", ["bug", "bug report"])
+        XCTAssertTrue(json.contains("\"category\" : \"bug report\""), json)
+    }
+
+    func testDecoratedSingleLabelStillMatches() async throws {
+        let json = try await classify("Category: bug.", ["bug", "feature request"])
+        XCTAssertTrue(json.contains("\"category\" : \"bug\""), json)
+        XCTAssertTrue(json.contains("\"matched\" : true"), json)
+    }
+
+    func testHonestRefusalNamingTheOptionsIsUnmatched() async throws {
+        // The desired outcome for out-of-domain input, and the harness's 6b case.
+        let json = try await classify("neither a bug nor a feature request", ["bug", "feature request"])
+        XCTAssertTrue(json.contains("\"matched\" : false"), json)
+    }
+}
+
+extension ServedModelIdTests {
+    /// `.whitespaces` does not include newlines, so `"model": "\n"` passed the emptiness
+    /// guard and erased the requested id (round-4 verify).
+    func testServedModelIgnoresANewlineOnlyReport() {
+        XCTAssertEqual(OmlxClient.servedModel(reported: "\n", requested: "qwen3-4b"), "qwen3-4b")
+        XCTAssertEqual(OmlxClient.servedModel(reported: "\r\n  ", requested: "qwen3-4b"), "qwen3-4b")
+    }
+}

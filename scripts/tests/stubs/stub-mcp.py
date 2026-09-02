@@ -50,7 +50,22 @@ for line in sys.stdin:
             if mode == "die":
                 os._exit(3)
             time.sleep(3600)      # answer nothing, ever
-        payload = json.dumps({"task": "summarize", "model": "stub-model",
+        if mode == "toolerror":
+            # A TOOL error, not a transport one: the server answers, and the answer is a
+            # refusal. Round 1 was entirely about this branch; until this mode existed no
+            # test could reach it, which is how a NameError shipped on it in round 4. The
+            # message carries a CSI sequence on purpose — the sanitiser on this path is
+            # what the test is checking.
+            print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                              "result": {"isError": True,
+                                         "content": [{"type": "text",
+                                                      "text": "Error: stub refused \x1b[2K the request"}]}}),
+                  flush=True)
+            continue
+        payload = json.dumps({"task": "summarize",
+                              # STUB_MODEL lets a test plant escapes/newlines in the served
+                              # id, which is server-authored and reaches the terminal.
+                              "model": os.environ.get("STUB_MODEL", "stub-model"),
                               "elapsed_seconds": 0.1, "text": "One. Two."})
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
                           "result": {"content": [{"type": "text", "text": payload}]}}), flush=True)

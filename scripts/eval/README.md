@@ -16,7 +16,15 @@ make eval MODELS="--model A --model B --model C"      # the comparison that matt
 | `0` | the run happened and every mechanical check passed |
 | `2` | the run happened and there are **findings** — a model did badly, which is data, not a build failure |
 | `1` | the run did **not** happen: nothing measured, a tool/transport/malformed failure, or **fewer rows than the run owed** |
-| `64` | usage error (`EX_USAGE`) — a bad flag or a malformed environment value. Round 3 found these exiting 2, which the table above defines as "ran fine, findings" |
+| `64` | usage error (`EX_USAGE`) — a bad flag, a malformed environment value, the same model or case file given twice. In **every** program of the harness: round 4 fixed `run.sh` alone and left `check.py`/`rpc.py` at argparse's 2 |
+
+A malformed *case file* is `1`, not `64`: the run did not happen. The line is flags-and-
+environment versus input files, and it is drawn there so that "the harness was invoked
+wrong" and "the harness was given something it could not measure" stay distinguishable.
+
+`make eval` maps `2` to success and prints a line saying so — make would otherwise render
+"findings present" as `*** [eval] Error 2`, for exactly the runs that are most informative.
+Run `scripts/eval/run.sh` directly if you need the raw code.
 
 The two-way version of this was indefensible: a tool error exited 1 while a model returning
 an empty string exited 0, so the axis was *which layer the emptiness happened at* rather
@@ -99,6 +107,28 @@ the coverage cannot weaken silently as the table is re-wrapped; `_TERMINATORS` a
 `_CLOSERS` have fixtures using `？`, `！`, `…` and a trailing newline. All of those
 mutations now go red.
 
+**Round 4's count could not see weakening, and round 5 adds a canary for that.** The suite
+asserts its own assertion count (`EXPECTED_CASES`), which catches a deleted guard. Round 4's
+verify neutered the central assertion helper — `if [ "$actual" = "$expect" ]` → `if true` —
+and the count stayed exactly where it was, byte-identical, while a defect seeded into
+`check.py` that 11 cases used to catch was caught by 2. Moving a boundary fixture back off
+the boundary, or hollowing a 21-entry corpus to one, were the same: the number counted
+`PASS++` calls, not what each call asserted.
+
+So the suite now re-runs itself against three deliberately broken copies of `check.py` —
+every check says ok, every check says not-ok, and `<= ceiling` made `<= ceiling + 1` — and
+requires **exactly** a pinned number of its own assertions to fail against each (currently
+90 / 69 / 8). That is the offline mutation sweep in miniature, inside `make test`, and it
+catches the three weakening mutations by construction: a neutered helper fails nothing, an
+off-boundary fixture no longer trips the off-by-one mutant, a hollowed corpus changes the
+count because corpora and probes are now counted **per fixture**. The three numbers are
+updated on purpose when fixtures change, like the count itself.
+
+What it does not close, stated here rather than glossed: an edit that moves a fixture *and*
+updates the constant to match is a deliberate edit, and no self-test distinguishes that from
+a correct one. A test suite cannot be immune to someone with write access to it, and this
+file stops claiming otherwise.
+
 **The sweep is still not part of `make test`** — it takes ~30 suite runs. So this remains a
 claim about a point in time, and the honest reading of two rounds of getting it wrong is:
 when you change a check or a table, re-run the sweep, and expect to find that the class you
@@ -177,23 +207,27 @@ offered label — forced into `feature request` as well. A forced label *matches
 prose in `human_review`, while this file claimed automating them "needs a labelled set this
 repo does not have".
 
-With `label_is` and `expect_row` those same replies read:
+With `expect_row.category` and `expect_row.matched` those same replies read (the first
+version of this block printed `FLAG label_is`, a line no shipped case can produce — `label_is`
+had already been replaced as the accuracy signal, and the author's own `results.jsonl` said
+`row.category`):
 
 ```
-model: Qwen3-0.6B-4bit
+model: mlx-community--Qwen3-0.6B-4bit
   classify-negative-hedged       ok
-  classify-bare-label-discipline FLAG   label_is
+  classify-bare-label-discipline FLAG   row.category
   classify-none-of-the-above     FLAG   row.matched
-model: Qwen3-4B-Instruct-2507-4bit
+model: mlx-community--Qwen3-4B-Instruct-2507-4bit
   classify-negative-hedged       ok
   classify-bare-label-discipline ok
   classify-none-of-the-above     FLAG   row.matched
+  measured=16  errored=0  malformed=0  (of 16 owed)
 ```
 
 Two findings at 0.6B, one at 4B — **the cliff, visible mechanically**, which is what issue #1
 asked for and what the first two rounds could not show. Note also what stays a human's job:
 `classify-negative-hedged` is `ok` on both, and whether a near-miss (`neutral`) would have
-been better than an inversion (`positive`) is not something `label_is` can weigh.
+been better than an inversion (`positive`) is not something `row.category` can weigh.
 
 Do not report a green run as "the model passed".
 
@@ -254,11 +288,9 @@ closed pipe. `run.sh` holds it with an explicit fd on a FIFO (macOS ships bash 3
 
 - `local_rewrite`, `local_complete`, `local_models` — the issue's own first step is
   summarize alone. The case format is tool-agnostic, so these are data later.
-- **Judging *how* wrong a wrong label is.** `label_is` decides correct/incorrect against a
-  gold label; whether an incorrect answer was a near miss or an inversion is a
-  `human_review` question. (An earlier version of this bullet claimed correctness itself
-  could not be automated "without a labelled set this repo does not have" — the labels were
-  in the case files at the time, written as prose.)
-- CI — needs a live oMLX and Apple silicon.
-- A formal benchmark with pre-registration. That discipline lives in
-  `local-llm-benchmarking` and stays there.
+- **Judging *how* wrong a wrong label is.** `expect_row.category` decides correct/incorrect
+  against a gold label; whether an incorrect answer was a near miss or an inversion is a
+  `human_review` question. (Two earlier versions of this bullet were wrong in turn: one said
+  correctness could not be automated "without a labelled set this repo does not have" while
+  the labels sat in the case files as prose; the next credited `label_is`, which conjoins
+  correctness with format and is no longer any shipped case's accuracy signal.)

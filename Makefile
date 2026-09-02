@@ -43,8 +43,15 @@ test-headed:
 ## scripts/tests/eval-checks.test.sh — so they stay verified where no model exists.
 ##   make eval MODELS="--model a --model b"   compares across sizes; that comparison is
 ##   the point, per the issue: the interesting output is where the cliff is.
+## run.sh exits 2 for "the run happened and there are findings" — data, not a build failure —
+## and make would print `*** [eval] Error 2` for exactly the runs that are most informative.
+## Map 2 to success here and say so; the raw code is one `./scripts/eval/run.sh` away.
 eval: build
-	./scripts/eval/run.sh $(MODELS)
+	@./scripts/eval/run.sh $(MODELS); rc=$$?; \
+	if [ $$rc -eq 2 ]; then \
+	  echo "  (run.sh exited 2: findings present. That is data, not a build failure, so make reports success;"; \
+	  echo "   run scripts/eval/run.sh directly if you need the raw exit code.)"; exit 0; fi; \
+	exit $$rc
 
 ## Reachability check against the configured oMLX server.
 ping: build

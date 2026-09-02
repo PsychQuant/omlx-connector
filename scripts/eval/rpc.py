@@ -15,9 +15,23 @@ Two subcommands, both used by run.sh and nothing else:
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+
+EX_USAGE = 64   # the contract's fourth code: a bad flag or a malformed value, in EVERY program
+
+
+class Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which the settled exit-code contract defines as
+    "the run happened and there are findings". Round 3 found that collision in run.sh;
+    round 4 fixed run.sh and left check.py and this file at 2. 64 (EX_USAGE) everywhere."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        sys.exit(EX_USAGE)
 
 
 # Fields a case may assert on with `expect_row`. These are the keys the tool payloads
@@ -30,14 +44,26 @@ ROW_FIELDS = {"task", "category", "matched", "model", "finish_reason", "elapsed_
 # a harness verdict and changed the window title. This repo already has the convention —
 # CLAUDE.md: "system-generated strings are not trusted into logs" — it just had not been
 # applied to this path.
-_UNSAFE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+#
+# ALL of C0 and C1, tab and newline included. Round 3's version left \x09 and \x0a in the gap
+# between its two ranges, so a server id carrying "\n" still split the flagged-rows table into
+# a forged second line — line forging being the simplest way to forge a verdict. And it was
+# applied to `model` only; `finish_reason`, `error`, case ids and the review prompts all reached
+# the terminal raw.
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
-def safe(value, limit=200):
-    """Strip control characters from anything we did not author before printing it."""
+def safe(value, limit=None):
+    """Strip control characters from anything we did not author before printing it.
+
+    `limit` is opt-in. Operator-authored text (case ids, human_review) is stripped of controls
+    and otherwise printed whole — round 4 truncated the one declared limit that reaches the
+    operator at 300 characters, mid-sentence, dropping its actionable clause.
+    """
     if value is None:
         return None
-    return _UNSAFE.sub("\ufffd", str(value))[:limit]
+    out = _UNSAFE.sub("\ufffd", str(value))
+    return out if limit is None else out[:limit]
 
 
 def load_case(path, index):
@@ -206,6 +232,97 @@ def cmd_score(args):
     return 0
 
 
+def completeness(measured, errored, malformed, owed):
+    """THE ONE DEFINITION OF A COMPLETE RUN. Returns None if complete, else the reason.
+
+    Round 4 had two: run.sh's publish gate said "measured >= 1 and no errors", summarize said
+    "and total == owed", and `mv` ran before the stricter one — so README's "only ever holds a
+    complete run" was overstated. Both callers now ask this function.
+
+    The count is an EQUALITY. Round 4 checked `total < owed` only, so a duplicated model or
+    case file produced more rows than owed at exit 0, the accounting consistent with itself.
+    """
+    total = measured + errored + malformed
+    if measured == 0:
+        return "NOTHING WAS MEASURED — every call errored or the file is empty."
+    if errored or malformed:
+        return f"{errored} call(s) failed and {malformed} row(s) were unreadable."
+    if owed and total < owed:
+        return f"{owed - total} row(s) were never written — {total} of {owed} owed."
+    if owed and total > owed:
+        return f"{total - owed} MORE row(s) than the run owed ({total} of {owed}) — a model or case file ran twice."
+    return None
+
+
+def read_rows(path):
+    """(measured, errored, malformed) over a JSONL file; a missing file counts as nothing measured."""
+    measured = errored = malformed = 0
+    try:
+        for line in open(path, encoding="utf-8"):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            if row.get("error"):
+                errored += 1
+            else:
+                measured += 1
+    except OSError:
+        pass
+    return measured, errored, malformed
+
+
+def cmd_complete(args):
+    """Exit 0 iff the staging file is a complete run. run.sh's publish decision."""
+    verdict = completeness(*read_rows(args.out), args.expected)
+    if verdict:
+        print(verdict)
+        return 1
+    return 0
+
+
+def cmd_append(args):
+    """Append stdin to --out without following symlinks.
+
+    Round 3 planted a symlink at `<out>.partial` and watched `: >` truncate its target; round
+    4 added check-then-write refusals, and round 4's verify named the class: anything created
+    between the check and the write wins. O_NOFOLLOW makes the write itself the defence — a
+    symlink that appears in the window fails the open instead of being followed.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    if args.create:
+        flags |= os.O_TRUNC
+    try:
+        fd = os.open(args.out, flags, 0o644)
+    except OSError as e:
+        print(f"refusing to write {args.out}: {e.strerror}", file=sys.stderr)
+        return 1
+    data = sys.stdin.buffer.read()
+    with os.fdopen(fd, "ab") as fh:
+        fh.write(data)
+    return 0
+
+
+def cmd_rowline(args):
+    """The per-case status line run.sh prints. Moved out of an inline `python3 -c` because that
+    is where round 4 shipped `re.sub` one line above `import re`, on the tool-error branch —
+    which no test could reach — so every recorded tool error printed a traceback."""
+    d = json.load(sys.stdin)
+    if d.get("error"):
+        print("tool error — " + safe(d["error"], 60))
+        return 0
+    bad = [c["check"] for c in d.get("checks", []) if not c.get("ok")]
+    mark = "ok  " if not bad else "FLAG"
+    extra = "" if not bad else "  " + safe(",".join(bad), 120)
+    fin = "" if not d.get("finish_reason") else "  [%s]" % safe(d["finish_reason"], 40)
+    print("%s  %5.1fs  %s%s%s" % (mark, d.get("elapsed_seconds") or 0.0,
+                                  safe(d.get("model") or "?", 80), fin, extra))
+    return 0
+
+
 def cmd_summarize(args):
     """The run's verdict, as a pure function of the output file.
 
@@ -248,10 +365,11 @@ def cmd_summarize(args):
     owed = args.expected
     print(f"  measured={measured}  errored={errored}  malformed={malformed}"
           + (f"  (of {owed} owed)" if owed else ""))
+    verdict = completeness(measured, errored, malformed, owed)
     if flagged:
         print(f"  {len(flagged)} row(s) failed a mechanical check:")
         for case, model, bad in flagged:
-            print(f"    {safe(case, 60)}  [{safe(model, 80)}]  {', '.join(bad)}")
+            print(f"    {safe(case, 60)}  [{safe(model, 80)}]  {safe(', '.join(bad), 120)}")
 
     # The half issue #1 asks NOT to be auto-judged. run.sh never printed these — the
     # questions were written into the file and then never put in front of anyone, so
@@ -264,7 +382,7 @@ def cmd_summarize(args):
             if (case, q) in seen:
                 continue
             seen.add((case, q))
-            print(f"    {safe(case, 60)}: {safe(q, 300)}")
+            print(f"    {safe(case, 60)}: {safe(q)}")
 
     print()
     # THE EXIT-CODE CONTRACT. Round 2 found the previous two-way split indefensible: a tool
@@ -284,18 +402,9 @@ def cmd_summarize(args):
     # this one number being unknown: rows that were never written cannot be reasoned about
     # from the rows that were. Comparing against what the run OWED catches them all,
     # including whichever branch would have been added next.
-    if owed and total < owed:
-        print(f"  {owed - total} row(s) were never written — {total} of {owed} cases",
-              file=sys.stderr)
-        print("  produced any result at all. This run is incomplete.", file=sys.stderr)
-        return 1
-    if measured == 0:
-        print("  NOTHING WAS MEASURED. Every call errored or the file is empty —", file=sys.stderr)
-        print("  this is not a passing run, it is a run that did not happen.", file=sys.stderr)
-        return 1
-    if errored or malformed:
-        print(f"  {errored} call(s) failed and {malformed} row(s) were unreadable — the", file=sys.stderr)
-        print("  measurement is incomplete, so this run is not a result.", file=sys.stderr)
+    if verdict:
+        print(f"  {verdict}", file=sys.stderr)
+        print("  This run is not a result.", file=sys.stderr)
         return 1
     if flagged:
         print(f"  {len(flagged)} row(s) have findings. The run itself was fine — this is a")
@@ -308,8 +417,8 @@ def cmd_summarize(args):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    sub = p.add_subparsers(dest="cmd", required=True)
+    p = Parser(description=__doc__)
+    sub = p.add_subparsers(dest="cmd", required=True, parser_class=Parser)
 
     r = sub.add_parser("request")
     r.add_argument("--case-file", required=True)
@@ -330,6 +439,19 @@ def main(argv=None):
     z.add_argument("--expected", type=int, default=0,
                    help="how many rows the run owed (models x cases); 0 disables the check")
     z.set_defaults(func=cmd_summarize)
+
+    c = sub.add_parser("complete")
+    c.add_argument("--out", required=True)
+    c.add_argument("--expected", type=int, default=0)
+    c.set_defaults(func=cmd_complete)
+
+    a = sub.add_parser("append")
+    a.add_argument("--out", required=True)
+    a.add_argument("--create", action="store_true", help="truncate/create instead of append")
+    a.set_defaults(func=cmd_append)
+
+    l = sub.add_parser("rowline")
+    l.set_defaults(func=cmd_rowline)
 
     args = p.parse_args(argv)
     return args.func(args)
