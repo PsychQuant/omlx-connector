@@ -232,7 +232,7 @@ def cmd_score(args):
     return 0
 
 
-def completeness(measured, errored, malformed, owed):
+def completeness(measured, errored, malformed, owed, pairs=None, expected_pairs=None):
     """THE ONE DEFINITION OF A COMPLETE RUN. Returns None if complete, else the reason.
 
     Round 4 had two: run.sh's publish gate said "measured >= 1 and no errors", summarize said
@@ -251,12 +251,30 @@ def completeness(measured, errored, malformed, owed):
         return f"{owed - total} row(s) were never written — {total} of {owed} owed."
     if owed and total > owed:
         return f"{total - owed} MORE row(s) than the run owed ({total} of {owed}) — a model or case file ran twice."
+    # IDENTITY, not cardinality. Round 5 compared counts only, so five rows for one case and
+    # none for four others was "complete", and a byte-identical copy of a case file doubled
+    # the run with self-consistent books. The run writes the (model, case) pairs it owes and
+    # the multiset of rows must equal it — no missing, no extra, no duplicates.
+    if expected_pairs is not None:
+        have = sorted((m or "", c or "") for m, c in (pairs or []))
+        want = sorted((m or "", c or "") for m, c in expected_pairs)
+        if have != want:
+            missing = [f"{m}/{c}" for m, c in want if (m, c) not in have][:3]
+            extra = [f"{m}/{c}" for m, c in have if (m, c) not in want][:3]
+            dup = len(have) - len(set(have))
+            return ("rows do not match the (model, case) pairs owed — "
+                    + (f"missing {missing} " if missing else "")
+                    + (f"unexpected {extra} " if extra else "")
+                    + (f"{dup} duplicate(s)" if dup else "")).strip()
     return None
 
 
 def read_rows(path):
-    """(measured, errored, malformed) over a JSONL file; a missing file counts as nothing measured."""
+    """(measured, errored, malformed, pairs) over a JSONL file; pairs are (model_requested,
+    case) for every parseable row, error rows included — the run owes a row per pair
+    whatever its outcome. A missing file counts as nothing measured."""
     measured = errored = malformed = 0
+    pairs = []
     try:
         for line in open(path, encoding="utf-8"):
             if not line.strip():
@@ -266,18 +284,29 @@ def read_rows(path):
             except json.JSONDecodeError:
                 malformed += 1
                 continue
+            pairs.append((row.get("model_requested") or "", row.get("case") or ""))
             if row.get("error"):
                 errored += 1
             else:
                 measured += 1
     except OSError:
         pass
-    return measured, errored, malformed
+    return measured, errored, malformed, pairs
+
+
+def load_expected_pairs(path):
+    if not path:
+        return None
+    with open(path, encoding="utf-8") as fh:
+        return [(m or "", c or "") for m, c in json.load(fh)]
 
 
 def cmd_complete(args):
     """Exit 0 iff the staging file is a complete run. run.sh's publish decision."""
-    verdict = completeness(*read_rows(args.out), args.expected)
+    measured, errored, malformed, pairs = read_rows(args.out)
+    expected_pairs = load_expected_pairs(args.expect_rows)
+    owed = args.expected or (len(expected_pairs) if expected_pairs is not None else 0)
+    verdict = completeness(measured, errored, malformed, owed, pairs, expected_pairs)
     if verdict:
         print(verdict)
         return 1
@@ -292,14 +321,24 @@ def cmd_append(args):
     between the check and the write wins. O_NOFOLLOW makes the write itself the defence — a
     symlink that appears in the window fails the open instead of being followed.
     """
+    # No O_TRUNC in the open: truncation happens only after the descriptor has been
+    # inspected. O_NOFOLLOW is symlink-specific — a HARD LINK to a regular file is a regular
+    # file, passes `[ -L ]` and `[ -f ]`, and round 5's `--create` truncated the linked
+    # victim through every guard. fstat on the open descriptor sees the link count, and that
+    # check has no window: the descriptor IS the file.
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
-    if args.create:
-        flags |= os.O_TRUNC
     try:
         fd = os.open(args.out, flags, 0o644)
     except OSError as e:
         print(f"refusing to write {args.out}: {e.strerror}", file=sys.stderr)
         return 1
+    st = os.fstat(fd)
+    if st.st_nlink > 1:
+        os.close(fd)
+        print(f"refusing to write {args.out}: it has {st.st_nlink} hard links", file=sys.stderr)
+        return 1
+    if args.create:
+        os.ftruncate(fd, 0)
     data = sys.stdin.buffer.read()
     with os.fdopen(fd, "ab") as fh:
         fh.write(data)
@@ -336,6 +375,7 @@ def cmd_summarize(args):
     all, which inline bash was not.
     """
     measured = errored = malformed = 0
+    pairs = []
     flagged = []
     review = []
     try:
@@ -351,6 +391,7 @@ def cmd_summarize(args):
         except json.JSONDecodeError:
             malformed += 1
             continue
+        pairs.append((row.get("model_requested") or "", row.get("case") or ""))
         if row.get("error"):
             errored += 1
             continue
@@ -362,10 +403,11 @@ def cmd_summarize(args):
             review.append((row.get("case"), q))
 
     total = measured + errored + malformed
-    owed = args.expected
+    expected_pairs = load_expected_pairs(args.expect_rows)
+    owed = args.expected or (len(expected_pairs) if expected_pairs is not None else 0)
     print(f"  measured={measured}  errored={errored}  malformed={malformed}"
           + (f"  (of {owed} owed)" if owed else ""))
-    verdict = completeness(measured, errored, malformed, owed)
+    verdict = completeness(measured, errored, malformed, owed, pairs, expected_pairs)
     if flagged:
         print(f"  {len(flagged)} row(s) failed a mechanical check:")
         for case, model, bad in flagged:
@@ -438,11 +480,14 @@ def main(argv=None):
     z.add_argument("--out", required=True)
     z.add_argument("--expected", type=int, default=0,
                    help="how many rows the run owed (models x cases); 0 disables the check")
+    z.add_argument("--expect-rows", default="",
+                   help="JSON file: the [model, case] pairs the run owes; rows must match exactly")
     z.set_defaults(func=cmd_summarize)
 
     c = sub.add_parser("complete")
     c.add_argument("--out", required=True)
     c.add_argument("--expected", type=int, default=0)
+    c.add_argument("--expect-rows", default="")
     c.set_defaults(func=cmd_complete)
 
     a = sub.add_parser("append")

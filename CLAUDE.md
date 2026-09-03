@@ -399,7 +399,7 @@ It is **not** part of `make test`, and the separation is structural rather than 
 subdirectory cannot join the hermetic run by accident. Making that glob recursive would
 silently undo it and give `make test` a live-server dependency.
 
-**Nor whether the delegated work is any good.** Not one of the 136 tests in `Tests/`
+**Nor whether the delegated work is any good.** Not one of the 143 tests in `Tests/`
 sends anything to a real model — `StubClient` fakes the client where one is needed at all,
 and most of the suite (launcher settings, loopback classification, version ordering) needs
 no client. An earlier draft of this paragraph said "every test uses `StubClient`", which is
@@ -412,7 +412,7 @@ accident. The *checks* it applies are pure text functions and are unit-tested in
 suite (`scripts/tests/eval-checks.test.sh`), so they stay verified where no model exists.
 
 The trap it is built against is the one every eval harness falls into: plausible rows, nothing
-actually asserted — and it took three rounds to get out of it, in a way worth recording because
+actually asserted — and six review rounds later it is still being found, in a way worth recording because
 each round's fix was correct and insufficient in the same shape.
 
 Round 1 shipped checks calling themselves "mutation-proven in both directions". That held only
@@ -425,11 +425,13 @@ tests asserted, still ran green. Round 3 pinned the tables with per-character
 probes — and left the ADD direction open, so appending an ordinary word to a meta list or an
 ordinary character to the Simplified set produced false positives with the suite fully green,
 in the direction the README itself calls the more damaging one. Round 4 added corpora for
-that direction, a per-character membership assertion, and the thing that finally stops the
-recursion: **the suite asserts its own case count**, because round 3 found every guard in it
-individually deletable at exit 0.
+that direction, a per-character membership assertion, and **the suite asserts its own case
+count**, because round 3 found every guard in it individually deletable at exit 0. (The first
+version of this sentence called that "the thing that finally stops the recursion". It did not;
+the next paragraph says why, and the superlative is left out here so the file does not
+contradict itself twenty lines apart.)
 
-**The pattern across all three is the same, and it is the point:** each round fixed the
+**The pattern across all of them is the same, and it is the point:** each round fixed the
 instances a reviewer named and left the class open one layer out. `當然|当然[，,、:：]` was fixed
 and its identical twin `我(?:已經|會|來|將)` — and the English `i(?:'ve| have| will)` — were not,
 so ordinary first-person content was scored as preamble for a round. The guard was moved out of
@@ -437,7 +439,7 @@ bash and made testable, and then failed open on transport errors instead of tool
 served-model-id decision was extracted into a tested function, and reverting its **call site**
 still left every test green until a fake oMLX server exercised the real client. Citing the
 "fix the property, not the file" section is not the same as obeying it, and this file is now
-three demonstrations of that.
+several demonstrations of that.
 
 A fourth round found the class again, and the Devil's Advocate found the layer before the
 author did: `label_is` and `expect_row` were tested only against fixtures the suite builds
@@ -460,6 +462,19 @@ The other round-5 lesson is smaller and exact: `run.sh`'s tool-error branch — 
 entire subject — had never been reachable in the suite, because the stub produced only
 transport failures. A `NameError` shipped on it in round 4 and no test could see it. When a
 branch is what an issue is *about*, the first test to write is the one that reaches it.
+
+Round six is where this stops being narrated as progress. Round 5's verify measured the
+canary's blind spot — 62 assertions it never runs, 23 it runs but that cannot flip — and
+showed that neutering any helper in either family is a single-line edit invisible to count
+and canary alike; it also found the canary switched off by an ambient environment variable,
+the mechanism shipping its own bypass. Round 6 fixed the two that were one line each (a
+per-run token the mutant must carry; per-fixture counting for the add-direction guards),
+wrote the blind spot into the suite and the README **with the families named**, and did not
+build the next layer. The reason is not fatigue. A second mutant family for `rpc.py` would
+need a guard, that guard would need a guard, and the Devil's Advocate has found the next
+square six times running. The honest statement is the one the suite now carries: here is
+exactly where the self-verification ends, and past it the property is "someone with write
+access to the test file can weaken it", which no test file can hold about itself.
 
 **The sweep is still not part of `make test`** — it takes ~30 suite runs — so the claim remains
 about a point in time. When you change a check or a table, re-run it, and expect the class you

@@ -180,4 +180,11 @@ fi
 
 echo
 echo "  $PASS passed, $FAIL failed"
+# This suite counts itself too — see eval-checks.test.sh for why a count is not enough and
+# still worth having: it catches a deleted case, which is the cheapest silent weakening.
+EXPECTED_CASES=12
+if [ $((PASS + FAIL)) -ne "$EXPECTED_CASES" ]; then
+    echo "  FAIL — suite ran $((PASS + FAIL)) case(s), expected $EXPECTED_CASES; a case was added or removed."
+    FAIL=$((FAIL + 1))
+fi
 [ "$FAIL" -eq 0 ]

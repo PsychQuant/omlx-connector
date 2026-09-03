@@ -85,8 +85,11 @@ cap truncates the answer before it starts.
 instructions that stop the model from prefacing its answer with commentary.
 
 **`local_classify` returns your own category strings.** It matches the model's reply
-back onto the list you supplied and reports `matched: false` when nothing lines up,
-rather than inventing a category.
+back onto the list you supplied: an exact match (after stripping decoration such as
+"Category: X.") wins; otherwise the **one** category the reply contains; otherwise
+`matched: false`. A reply that names two of your categories — "not a bug, a feature
+request" — is `matched: false` too: the model has not chosen, and guessing the first
+one mentioned scored wrong answers as right. It never invents a category.
 
 **Batch work benefits most.** One summary is barely worth the cold start; forty
 transcript segments are exactly what this is for, since the model stays loaded across

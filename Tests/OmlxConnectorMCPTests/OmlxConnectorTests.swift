@@ -301,6 +301,16 @@ final class ClassifyMatchingTests: XCTestCase {
         XCTAssertTrue(json.contains("\"matched\" : true"), json)
     }
 
+    /// The clause round 4's finding turns on: a contained label that is a substring of another
+    /// contained label does not count. Round 5 shipped it with no test — replacing it with
+    /// plain unique-containment left all 141 tests green. This is the one case where the two
+    /// rules disagree.
+    func testShorterLabelInsideLongerOneDoesNotMakeItAmbiguous() async throws {
+        let json = try await classify("It's a bug report.", ["bug", "bug report"])
+        XCTAssertTrue(json.contains("\"category\" : \"bug report\""), json)
+        XCTAssertTrue(json.contains("\"matched\" : true"), json)
+    }
+
     func testHonestRefusalNamingTheOptionsIsUnmatched() async throws {
         // The desired outcome for out-of-domain input, and the harness's 6b case.
         let json = try await classify("neither a bug nor a feature request", ["bug", "feature request"])
@@ -314,5 +324,20 @@ extension ServedModelIdTests {
     func testServedModelIgnoresANewlineOnlyReport() {
         XCTAssertEqual(OmlxClient.servedModel(reported: "\n", requested: "qwen3-4b"), "qwen3-4b")
         XCTAssertEqual(OmlxClient.servedModel(reported: "\r\n  ", requested: "qwen3-4b"), "qwen3-4b")
+    }
+}
+
+
+// MARK: - Terminal sanitizer for server-authored strings printed by --ping
+
+/// `--ping` prints model ids the server reported. Round 5's harness stripped C0 from that
+/// banner in bash and could not strip LF (the banner is multi-line) or C1 (byte-level tr on
+/// UTF-8 would corrupt CJK ids). The ids are sanitized where they are printed instead.
+final class TerminalSanitizerTests: XCTestCase {
+    func testStripsC0C1AndDELButKeepsOrdinaryText() {
+        XCTAssertEqual(sanitizedForTerminal("m\u{1B}[2K\u{9B}x\u{7F}\ny"), "m\u{FFFD}[2K\u{FFFD}x\u{FFFD}\u{FFFD}y")
+        XCTAssertEqual(sanitizedForTerminal("mlx-community--Qwen3-4B-Instruct-2507-4bit"),
+                       "mlx-community--Qwen3-4B-Instruct-2507-4bit")
+        XCTAssertEqual(sanitizedForTerminal("模型-繁體"), "模型-繁體")
     }
 }

@@ -48,4 +48,4 @@ __pycache__/
 # Partial results from an interrupted `make eval`. run.sh deliberately leaves these
 # beside the destination so an interrupted run does not lose what it measured — which
 # means the default failure path drops one inside the repo, carrying verbatim reply text.
-scripts/eval/results.jsonl.partial
+scripts/eval/results.jsonl.partial*

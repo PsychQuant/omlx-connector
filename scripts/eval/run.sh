@@ -96,7 +96,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; 
 # a fourth.
 if ! PING=$("$BINARY" --ping 2>&1); then
     echo "oMLX preflight failed — nothing to evaluate" >&2
-    printf '%s\n' "$PING" | tr -d '\000-\011\013-\037\177' | sed 's/^/  /' >&2
+    printf '%s\n' "$PING" | python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "\ufffd", sys.stdin.read()))' | sed 's/^/  /' >&2
     echo "  start oMLX, or set OMLX_BASE_URL to where it listens" >&2
     exit 1
 fi
@@ -119,6 +119,9 @@ for case_file in "${CASE_FILES[@]}"; do
     if ! n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file" 2>&1); then
         echo "unreadable case file $case_file: $n" >&2; exit 1
     fi
+    # Validated BEFORE it reaches `$(( ))` — the round-1 class, held as a property this time.
+    # `2>&1` above means a python that exits 0 while writing to stderr would put text here.
+    case "$n" in ''|*[!0-9]*) echo "unreadable case file $case_file: $n" >&2; exit 1 ;; esac
     if [ "$n" -eq 0 ]; then
         echo "case file has no cases: $case_file" >&2; exit 1
     fi
@@ -126,8 +129,31 @@ for case_file in "${CASE_FILES[@]}"; do
 done
 EXPECTED_ROWS=$((TOTAL_CASES * ${#MODELS[@]}))
 
+# THE SAME CASE TWICE, by id, across every file — the property; realpath was one spelling of
+# it, and a byte-identical copy or a hard link walked past it with self-consistent books.
+dupid=$(python3 - "${CASE_FILES[@]}" <<'PYEOF'
+import collections, json, sys
+seen = collections.Counter()
+for path in sys.argv[1:]:
+    for c in json.load(open(path, encoding="utf-8"))["cases"]:
+        seen[c["id"]] += 1
+print(",".join(k for k, v in seen.items() if v > 1))
+PYEOF
+)
+[ -z "$dupid" ] || { echo "case id(s) given more than once across --cases files: $dupid" >&2; exit 64; }
+
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-eval.XXXXXX")
 SERVER_PID=""
+# The (model, case) pairs this run owes. Both the publish gate and the verdict compare the
+# rows against this multiset — identity, not a number.
+EXPECT_ROWS="$TMP/expected-rows.json"
+python3 - "$EXPECT_ROWS" "${MODELS[@]}" -- "${CASE_FILES[@]}" <<'PYEOF'
+import json, sys
+out = sys.argv[1]; rest = sys.argv[2:]; sep = rest.index("--")
+models, files = rest[:sep], rest[sep + 1:]
+ids = [c["id"] for path in files for c in json.load(open(path, encoding="utf-8"))["cases"]]
+json.dump([[m, i] for m in models for i in ids], open(out, "w"))
+PYEOF
 STAGING="${OUT}.partial"
 # The staging path is derived from an operator-supplied `--out`, so it is fully predictable
 # — and `: >` follows symlinks. Reproduced in round 3: a symlink planted at
@@ -138,6 +164,9 @@ if [ -L "$STAGING" ]; then
 fi
 if [ -e "$STAGING" ] && [ ! -f "$STAGING" ]; then
     echo "refusing to write $STAGING — it exists and is not a regular file" >&2; exit 1
+fi
+if [ -e "$STAGING" ] && [ "$(stat -f %l "$STAGING" 2>/dev/null || echo 1)" -gt 1 ]; then
+    echo "refusing to write $STAGING — it is hard-linked elsewhere" >&2; exit 1
 fi
 # A previous run's partial results are evidence someone may be mid-investigation. Round 3
 # truncated them silently; round 4 refused to run while they existed, which made the harness
@@ -262,7 +291,7 @@ print(json.dumps({"jsonrpc":"2.0","id":int(sys.argv[1]),"method":"initialize","p
 # ── Run ───────────────────────────────────────────────────────────────────────────
 echo "eval → $OUT"
 echo "  binary: $BINARY"
-printf '%s\n' "$PING" | tr -d '\000-\011\013-\037\177' | sed 's/^/  /'
+printf '%s\n' "$PING" | python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "\ufffd", sys.stdin.read()))' | sed 's/^/  /'
 
 for model in "${MODELS[@]}"; do
     echo
@@ -371,17 +400,17 @@ done
 # publish decision and again inside summarize for the verdict. Round 4 had two: this gate said
 # "measured>=1 and no errors", summarize said "and total == owed", and the mv between them
 # meant a short run could publish. Now the count is consulted BEFORE anything is replaced.
-if ! INCOMPLETE=$(python3 "$RPC" complete --out "$STAGING" --expected "$EXPECTED_ROWS" 2>&1); then
+if ! INCOMPLETE=$(python3 "$RPC" complete --out "$STAGING" --expected "$EXPECTED_ROWS" --expect-rows "$EXPECT_ROWS" 2>&1); then
     echo >&2
     echo "  incomplete run ($INCOMPLETE) — $OUT left as it was." >&2
     echo "  What this run did produce: $STAGING" >&2
-    python3 "$RPC" summarize --out "$STAGING" --expected "$EXPECTED_ROWS"
+    python3 "$RPC" summarize --out "$STAGING" --expected "$EXPECTED_ROWS" --expect-rows "$EXPECT_ROWS"
     exit 1
 fi
 mv "$STAGING" "$OUT" || { echo "could not publish to $OUT; rows kept at $STAGING" >&2; exit 1; }
 
 echo
-python3 "$RPC" summarize --out "$OUT" --expected "$EXPECTED_ROWS"
+python3 "$RPC" summarize --out "$OUT" --expected "$EXPECTED_ROWS" --expect-rows "$EXPECT_ROWS"
 RC=$?
 echo "  rows: $OUT"
 exit $RC

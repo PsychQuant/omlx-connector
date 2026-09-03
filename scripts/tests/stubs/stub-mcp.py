@@ -10,7 +10,8 @@ STUB_ANSWER_CALLS says, after which it goes silent (STUB_MODE=silent) or exits
 import json, os, sys, time
 
 if "--ping" in sys.argv:
-    print("stub-mcp: reachable")
+    # STUB_PING lets a test plant control codepoints in the banner, which is server-authored.
+    print(os.environ.get("STUB_PING", "stub-mcp: reachable"))
     sys.exit(0)
 
 answer = int(os.environ.get("STUB_ANSWER_CALLS", "1"))

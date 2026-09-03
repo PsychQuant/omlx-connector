@@ -156,9 +156,10 @@ _PREAMBLE_PATTERNS = [
     r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,14}"
     r"(?:摘要|總結|总结|翻譯|翻译|改寫|改写)",
     # …and 幫你 alone is not it either: 「我會幫你確認會議時間」 is an offer to do a task, which
-    # is content. Round 4 flagged it. The meta signal is a COMPLETION REPORT on the requester's
-    # behalf — 幫你…好了 / 完成 — the model saying the work you asked for is done.
-    r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,8}(?:幫你|幫您|帮你|帮您|為你|为你|替你)"
+    # is content. Round 4 flagged it. Round 5 narrowed to 幫你…完成 and STILL admitted the
+    # future modals 會／將／來, so 「我會在明天幫你完成報告。」 — an offer, one verb over — was
+    # flagged again. A completion report is PAST: 已經. The tense, not the verb, is the signal.
+    r"我(?:已經|已经)[^。！？\n]{0,8}(?:幫你|幫您|帮你|帮您|為你|为你|替你)"
     r"[^。！？\n]{0,8}(?:好了|完成|做好|弄好|寫好|写好)",
     r"(?:摘要|總結|总结)(?:如下|如下：)",
 ]

@@ -64,3 +64,18 @@ func formatJSON(_ value: Any) throws -> String {
 func actionResult(_ fields: [String: Any]) throws -> String {
     try formatJSON(fields)
 }
+
+
+/// Strip C0, DEL and C1 from a string the SERVER authored before it reaches a terminal.
+/// `--ping` prints model ids the server reported; a reply carrying `\u{1B}[2K` or a raw
+/// `\n` could erase or forge a line of the harness's own banner. The eval harness filters
+/// the banner too, but cannot tell a structural newline from an injected one — only the
+/// point that prints the id can. Same convention as `TrustedErrorMessage`: text we did not
+/// author is not trusted into output as-is.
+func sanitizedForTerminal(_ text: String) -> String {
+    String(text.unicodeScalars.map { scalar -> Character in
+        let v = scalar.value
+        let isControl = v < 0x20 || (v >= 0x7F && v <= 0x9F)
+        return isControl ? "\u{FFFD}" : Character(scalar)
+    })
+}

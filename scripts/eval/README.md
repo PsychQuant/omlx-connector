@@ -15,7 +15,7 @@ make eval MODELS="--model A --model B --model C"      # the comparison that matt
 |---|---|
 | `0` | the run happened and every mechanical check passed |
 | `2` | the run happened and there are **findings** — a model did badly, which is data, not a build failure |
-| `1` | the run did **not** happen: nothing measured, a tool/transport/malformed failure, or **fewer rows than the run owed** |
+| `1` | the run did **not** happen: nothing measured, a tool/transport/malformed failure, or rows that are not the (model, case) pairs the run owed — too few, too many, duplicated, or for the wrong cases |
 | `64` | usage error (`EX_USAGE`) — a bad flag, a malformed environment value, the same model or case file given twice. In **every** program of the harness: round 4 fixed `run.sh` alone and left `check.py`/`rpc.py` at argparse's 2 |
 
 A malformed *case file* is `1`, not `64`: the run did not happen. The line is flags-and-
@@ -30,7 +30,8 @@ The two-way version of this was indefensible: a tool error exited 1 while a mode
 an empty string exited 0, so the axis was *which layer the emptiness happened at* rather
 than what it meant — and an all-red run reported success. `results.jsonl` is only replaced
 by a **complete** run; an incomplete one leaves the previous file alone and writes what it
-did measure to `results.jsonl.partial`, which a later run refuses to overwrite.
+did measure to `results.jsonl.partial`, which a later run moves aside under a timestamped
+name rather than overwriting (both spellings are gitignored).
 
 **Completeness is counted, not inferred.** `run.sh` computes how many rows a run owes
 (models × cases) before anything starts, and `summarize` compares. Every fail-open variant
@@ -72,7 +73,7 @@ it must fail on and one it must pass on, so they stay verified on a machine with
 | `sentence_count` | was `max_sentences` respected? (a ceiling — under-shooting is not a violation) |
 | `no_preamble` | did the reply start with content, or with "Here is a summary of…"? The server sends `outputOnlyRule` as its system prompt on every call; this measures whether the model obeyed it |
 | `script_purity` | Traditional Chinese asked for, Simplified characters delivered? |
-| `category_member` | is the label one of the offered candidates, or a sentence mentioning one? Answers "did it follow the format", **not** "was it right" |
+| `category_member` | is the reply a **bare** label from the offered list? A sentence that merely mentions one fails. This is the format question, **not** "was it right" — that is `expect_row.category` |
 | `label_is` | correct **and** bare, conjoined — it compares the raw reply to a gold label. Useful when you want both at once; **not** the accuracy signal, because a right answer that was decorated fails it identically to a wrong one |
 
 Accuracy independent of format comes from `expect_row: {"category": …}` — the server has
@@ -118,16 +119,28 @@ the boundary, or hollowing a 21-entry corpus to one, were the same: the number c
 So the suite now re-runs itself against three deliberately broken copies of `check.py` —
 every check says ok, every check says not-ok, and `<= ceiling` made `<= ceiling + 1` — and
 requires **exactly** a pinned number of its own assertions to fail against each (currently
-90 / 69 / 8). That is the offline mutation sweep in miniature, inside `make test`, and it
+93 / 74 / 8; the round-5 README said 90 / 69 / 8 because the constants were re-measured after
+it was written — the round-6 numbers here were measured last). That is the offline mutation sweep in miniature, inside `make test`, and it
 catches the three weakening mutations by construction: a neutered helper fails nothing, an
 off-boundary fixture no longer trips the off-by-one mutant, a hollowed corpus changes the
 count because corpora and probes are now counted **per fixture**. The three numbers are
 updated on purpose when fixtures change, like the count itself.
 
-What it does not close, stated here rather than glossed: an edit that moves a fixture *and*
-updates the constant to match is a deliberate edit, and no self-test distinguishes that from
-a correct one. A test suite cannot be immune to someone with write access to it, and this
-file stops claiming otherwise.
+**What the canary does not see — measured in round 5, with the families named.** A canary
+sees only an assertion whose verdict flips under one of the three mutants. Two families do
+not: everything after the canary exit (the `rpc.py` score / summarize / complete / append
+cases, the `run.sh` end-to-end cases, the manifest, the served-model call site — 62 of 248
+assertions in round 5), and assertions that check an *exit code* or a table's *membership*
+rather than a verdict (`usage64()`, `guard()`, the probe-coverage and add-direction checks —
+23 of 248). Neutering any one of those helpers is a single-line edit that touches no fixture
+and no constant and leaves the count and all three canaries unchanged; so is neutering the
+canary's own comparison. Round 5's verify did each of these and showed a real defect escaping
+behind it. Round 6 closed the two that were one line each — the ambient-variable bypass now
+needs a per-run token written into the mutant, and the add-direction guards count per
+fixture — and stopped there: the next layer is a second mutant family for `rpc.py` and a
+guard for `canary()`, and the layer after that is the same question. A test suite cannot be
+immune to someone with write access to it. This file says where that immunity ends instead
+of claiming it does not.
 
 **The sweep is still not part of `make test`** — it takes ~30 suite runs. So this remains a
 claim about a point in time, and the honest reading of two rounds of getting it wrong is:
@@ -207,22 +220,35 @@ offered label — forced into `feature request` as well. A forced label *matches
 prose in `human_review`, while this file claimed automating them "needs a labelled set this
 repo does not have".
 
-With `expect_row.category` and `expect_row.matched` those same replies read (the first
-version of this block printed `FLAG label_is`, a line no shipped case can produce — `label_is`
-had already been replaced as the accuracy signal, and the author's own `results.jsonl` said
-`row.category`):
+With `expect_row.category` and `expect_row.matched`, the round-5 live run — `run.sh`'s
+per-case lines verbatim, elapsed and served id included, because two earlier versions of this
+block printed output no run could produce:
 
 ```
 model: mlx-community--Qwen3-0.6B-4bit
-  classify-negative-hedged       ok
-  classify-bare-label-discipline FLAG   row.category
-  classify-none-of-the-above     FLAG   row.matched
+  classify-negative-hedged     ok      0.1s  mlx-community--Qwen3-0.6B-4bit
+  classify-bare-label-discipline FLAG    0.1s  mlx-community--Qwen3-0.6B-4bit  row.category
+  classify-none-of-the-above   FLAG    0.1s  mlx-community--Qwen3-0.6B-4bit  row.matched
+  meeting-coverage-2sentence   ok      0.2s  mlx-community--Qwen3-0.6B-4bit
+  traditional-chinese-purity   ok      0.2s  mlx-community--Qwen3-0.6B-4bit
+  numbers-one-sentence         ok      0.3s  mlx-community--Qwen3-0.6B-4bit
+  focus-open-questions         ok      0.2s  mlx-community--Qwen3-0.6B-4bit
+  short-source-preamble-bait   ok      0.2s  mlx-community--Qwen3-0.6B-4bit
 model: mlx-community--Qwen3-4B-Instruct-2507-4bit
-  classify-negative-hedged       ok
-  classify-bare-label-discipline ok
-  classify-none-of-the-above     FLAG   row.matched
+  classify-negative-hedged     ok      0.2s  mlx-community--Qwen3-4B-Instruct-2507-4bit
+  classify-bare-label-discipline ok      0.1s  mlx-community--Qwen3-4B-Instruct-2507-4bit
+  classify-none-of-the-above   FLAG    0.2s  mlx-community--Qwen3-4B-Instruct-2507-4bit  row.matched
+  meeting-coverage-2sentence   ok      0.5s  mlx-community--Qwen3-4B-Instruct-2507-4bit
+  traditional-chinese-purity   ok      0.6s  mlx-community--Qwen3-4B-Instruct-2507-4bit
+  numbers-one-sentence         ok      0.5s  mlx-community--Qwen3-4B-Instruct-2507-4bit
+  focus-open-questions         ok      0.8s  mlx-community--Qwen3-4B-Instruct-2507-4bit
+  short-source-preamble-bait   ok      0.4s  mlx-community--Qwen3-4B-Instruct-2507-4bit
   measured=16  errored=0  malformed=0  (of 16 owed)
 ```
+
+A decorated wrong answer ("Category: feature request.") would print `FLAG … category_member,
+row.category` — both checks, on one line; the 0.6B here answered a bare wrong label, so only
+`row.category` fired.
 
 Two findings at 0.6B, one at 4B — **the cliff, visible mechanically**, which is what issue #1
 asked for and what the first two rounds could not show. Note also what stays a human's job:

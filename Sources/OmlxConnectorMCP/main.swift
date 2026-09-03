@@ -34,7 +34,10 @@ if arguments.contains("--ping") {
         print("\(MCPIdentity.name) \(AppVersion.current)")
         print("server:  \(baseURL.absoluteString) — reachable")
         print("models:  \(models.count) available")
-        print("loaded:  \(loaded.isEmpty ? "none (first call will pay a cold start)" : loaded.joined(separator: ", "))")
+        // Server-authored ids go through the terminal sanitizer; this line is the one place
+        // that can tell a structural newline from one inside an id (hand-checked call site).
+        let shown = loaded.map(sanitizedForTerminal).joined(separator: ", ")
+        print("loaded:  \(loaded.isEmpty ? "none (first call will pay a cold start)" : shown)")
         if let configured = OmlxConfig.defaultModel() {
             print("default: \(configured) (from OMLX_MODEL)")
         }

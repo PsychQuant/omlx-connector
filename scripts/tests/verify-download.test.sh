@@ -158,6 +158,14 @@ fi
 
 echo
 echo "  $PASS passed, $FAIL failed, $SKIP skipped"
+# This suite counts itself too (the eval-checks suite introduced the discipline; round 5's
+# verify noted that deleting a case from THIS file was still invisible). A skip here can be
+# legitimate — the positive case needs DEVELOPER_ID — so skips count toward the total.
+EXPECTED_CASES=10
+if [ $((PASS + FAIL + SKIP)) -ne "$EXPECTED_CASES" ]; then
+    echo "  FAIL — suite ran $((PASS + FAIL + SKIP)) case(s), expected $EXPECTED_CASES; a case was added or removed."
+    FAIL=$((FAIL + 1))
+fi
 
 if [ "$SKIP" -gt 0 ] && [ "${REQUIRE_FULL_SUITE:-}" = "1" ]; then
     echo "  REQUIRE_FULL_SUITE=1 and $SKIP case(s) did not run — treating as failure." >&2
