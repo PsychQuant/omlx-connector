@@ -139,8 +139,16 @@ _PREAMBLE_PATTERNS = [
     r"this is (?:a|the) (?:summary|translation|rewrite|paraphrase)\b",
     # A first-person opener is not a preamble by itself: "I will attend the meeting on
     # Tuesday" is ordinary content. It becomes one only when a word about output follows.
+    # …and only when the sentence HANDS OFF to the output. Round 6's verify: "I will outline
+    # my concerns in the next section" and 「我已經讀過這份摘要了」 are content — summary,
+    # outline, translate, 摘要, 總結 are ordinary words that can appear in output, which
+    # check.py's own rule above says a trigger must never be. What makes "I have summarized
+    # the text below" a preamble is the hand-off: below / as follows / a colon / 如下. The
+    # declared cost, chosen on purpose: a preamble with no hand-off ("I have summarized the
+    # key points for you.") is treated as content. False positives are the damaging direction.
     r"i(?:'ve| have| will| ?'ll| am going to)[^.!?\n]{0,40}"
-    r"(?:summari[sz]|rewr(?:ite|ote)|translat|outlin|paraphras)",
+    r"(?:summari[sz]|rewr(?:ite|ote)|translat|outlin|paraphras)[^.!?\n]{0,40}"
+    r"(?::|as follows|below)",
     r"let me (?:summari[sz]e|rewrite|translate|paraphrase|outline)\b",
     r"as requested[,:]",
     r"(?:以下|下面)(?:是|為|为|就是)",
@@ -154,11 +162,13 @@ _PREAMBLE_PATTERNS = [
     # while 「我會整理房間，然後出門。」 is not. The difference is 幫你: the model addressing
     # the requester about work done ON THEIR BEHALF. That, not the verb, is the meta signal.
     r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,14}"
-    r"(?:摘要|總結|总结|翻譯|翻译|改寫|改写)",
+    r"(?:摘要|總結|总结|翻譯|翻译|改寫|改写)[^。！？\n]{0,10}(?:如下|[:：])",
     # …and 幫你 alone is not it either: 「我會幫你確認會議時間」 is an offer to do a task, which
     # is content. Round 4 flagged it. Round 5 narrowed to 幫你…完成 and STILL admitted the
     # future modals 會／將／來, so 「我會在明天幫你完成報告。」 — an offer, one verb over — was
-    # flagged again. A completion report is PAST: 已經. The tense, not the verb, is the signal.
+    # flagged again. What the pattern keys on now is the ADVERB 已經, not tense: Chinese has
+    # no tense marking, and 「我幫你把報告寫好了」 — a completion report without 已經 — reads
+    # as content here. That is the declared cost; round 6's comment said "tense" and was wrong.
     r"我(?:已經|已经)[^。！？\n]{0,8}(?:幫你|幫您|帮你|帮您|為你|为你|替你)"
     r"[^。！？\n]{0,8}(?:好了|完成|做好|弄好|寫好|写好)",
     r"(?:摘要|總結|总结)(?:如下|如下：)",

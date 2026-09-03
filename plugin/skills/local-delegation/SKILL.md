@@ -85,8 +85,9 @@ cap truncates the answer before it starts.
 instructions that stop the model from prefacing its answer with commentary.
 
 **`local_classify` returns your own category strings.** It matches the model's reply
-back onto the list you supplied: an exact match (after stripping decoration such as
-"Category: X.") wins; otherwise the **one** category the reply contains; otherwise
+back onto the list you supplied: an exact match (after trimming surrounding punctuation,
+quotes and brackets) wins; otherwise the **one** category the reply contains — which is
+how a decorated reply such as "Category: bug." resolves; otherwise
 `matched: false`. A reply that names two of your categories — "not a bug, a feature
 request" — is `matched: false` too: the model has not chosen, and guessing the first
 one mentioned scored wrong answers as right. It never invents a category.

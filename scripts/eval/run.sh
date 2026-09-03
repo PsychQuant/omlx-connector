@@ -39,6 +39,12 @@ case "$TIMEOUT" in
 esac
 [ "$TIMEOUT" -gt 0 ] || { echo "OMLX_EVAL_TIMEOUT must be positive" >&2; exit 64; }
 
+# SERVER-AUTHORED TEXT BOUND FOR THE TERMINAL goes through here: C0 except LF, DEL, C1, and
+# the two Unicode line separators, replaced by codepoint. Not `tr`, which works on bytes and
+# would corrupt a UTF-8 id. Three such paths exist — the --ping banner, the served id, and the
+# process's own stderr quoted in "server exited:" — and round 6 filtered two of them.
+scrub() { python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029]", "\ufffd", sys.stdin.read()))'; }
+
 # A missing option value used to die with bash's raw "$2: unbound variable" under set -u,
 # while every other argument error here gets a named message.
 need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "$1 needs a value" >&2; exit 64; }; }
@@ -73,34 +79,12 @@ dup=$(printf '%s\n' "${MODELS[@]}" | sort | uniq -d | head -1)
 dup=$(for f in "${CASE_FILES[@]}"; do python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$f"; done | sort | uniq -d | head -1)
 [ -z "$dup" ] || { echo "--cases '$dup' given more than once" >&2; exit 64; }
 
-# ── Preconditions ─────────────────────────────────────────────────────────────────
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
-[ -x "$BINARY" ] || {
-    echo "not built: $BINARY" >&2
-    echo "  run: swift build   (or set OMLX_EVAL_BINARY)" >&2
-    exit 1
-}
-
-# THE PREFLIGHT IS THE BINARY'S OWN. The first version curled `$OMLX_URL` — which is the
-# *usage-1* variable read by omlx-claude, while the binary this harness drives reads
-# `OMLX_BASE_URL` (OmlxClient.swift:19). So the go/no-go check verified an address the run
-# never used: a live server on one port and a dead one on the other produced a green
-# preflight and five tool errors. That is the same shape as the managed-settings defect
-# CLAUDE.md describes ("the loopback gate will have verified an address the session does
-# not use"), reproduced in a new file.
+# ARGUMENTS ARE JUDGED BEFORE ANY SERVER IS CONTACTED. Round 6 put the case-id check after
+# the --ping preflight: with no oMLX the preflight exited 1 before a usage error could, so the
+# hermetic suite needed a live server to see its 64, and with one up the same test ran a real
+# request for a model named "a" and left .partial files in the repo. Everything here reads
+# only the arguments and the case files.
 #
-# `--ping` cannot drift from what the run uses, because it IS the run's client: same
-# variable, same OmlxConfig.resolveBaseURL, and therefore same LoopbackPolicy. That last
-# part also settles the other half — CLAUDE.md forbids "a third path that resolves an
-# address without consulting the policy", and a bash reimplementation here would have been
-# a fourth.
-if ! PING=$("$BINARY" --ping 2>&1); then
-    echo "oMLX preflight failed — nothing to evaluate" >&2
-    printf '%s\n' "$PING" | python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "\ufffd", sys.stdin.read()))' | sed 's/^/  /' >&2
-    echo "  start oMLX, or set OMLX_BASE_URL to where it listens" >&2
-    exit 1
-fi
-
 # HOW MANY ROWS THIS RUN OWES. Everything below depends on knowing this number, and not
 # knowing it is the root of every fail-open variant three verify rounds found: a tool error
 # that produced a row the guard misread, a transport failure that produced no row, a model
@@ -131,23 +115,59 @@ EXPECTED_ROWS=$((TOTAL_CASES * ${#MODELS[@]}))
 
 # THE SAME CASE TWICE, by id, across every file — the property; realpath was one spelling of
 # it, and a byte-identical copy or a hard link walked past it with self-consistent books.
-dupid=$(python3 - "${CASE_FILES[@]}" <<'PYEOF'
+if ! dupid=$(python3 - "${CASE_FILES[@]}" 2>&1 <<'PYEOF'
 import collections, json, sys
 seen = collections.Counter()
 for path in sys.argv[1:]:
     for c in json.load(open(path, encoding="utf-8"))["cases"]:
+        if "id" not in c:
+            raise SystemExit(f"{path}: a case has no id")
         seen[c["id"]] += 1
 print(",".join(k for k, v in seen.items() if v > 1))
 PYEOF
-)
+); then
+    # NOT `dupid=$(…)` with the status dropped. Round 6 did that: a case without an id raised
+    # KeyError, the variable came back empty, and the check passed — fail-open, in the check
+    # written against fail-open.
+    echo "unreadable case file: $dupid" >&2; exit 1
+fi
 [ -z "$dupid" ] || { echo "case id(s) given more than once across --cases files: $dupid" >&2; exit 64; }
+
+# ── Preconditions ─────────────────────────────────────────────────────────────────
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+[ -x "$BINARY" ] || {
+    echo "not built: $BINARY" >&2
+    echo "  run: swift build   (or set OMLX_EVAL_BINARY)" >&2
+    exit 1
+}
+
+# THE PREFLIGHT IS THE BINARY'S OWN. The first version curled `$OMLX_URL` — which is the
+# *usage-1* variable read by omlx-claude, while the binary this harness drives reads
+# `OMLX_BASE_URL` (OmlxClient.swift:19). So the go/no-go check verified an address the run
+# never used: a live server on one port and a dead one on the other produced a green
+# preflight and five tool errors. That is the same shape as the managed-settings defect
+# CLAUDE.md describes ("the loopback gate will have verified an address the session does
+# not use"), reproduced in a new file.
+#
+# `--ping` cannot drift from what the run uses, because it IS the run's client: same
+# variable, same OmlxConfig.resolveBaseURL, and therefore same LoopbackPolicy. That last
+# part also settles the other half — CLAUDE.md forbids "a third path that resolves an
+# address without consulting the policy", and a bash reimplementation here would have been
+# a fourth.
+if ! PING=$("$BINARY" --ping 2>&1); then
+    echo "oMLX preflight failed — nothing to evaluate" >&2
+    printf '%s\n' "$PING" | scrub | sed 's/^/  /' >&2
+    echo "  start oMLX, or set OMLX_BASE_URL to where it listens" >&2
+    exit 1
+fi
+
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-eval.XXXXXX")
 SERVER_PID=""
 # The (model, case) pairs this run owes. Both the publish gate and the verdict compare the
 # rows against this multiset — identity, not a number.
 EXPECT_ROWS="$TMP/expected-rows.json"
-python3 - "$EXPECT_ROWS" "${MODELS[@]}" -- "${CASE_FILES[@]}" <<'PYEOF'
+python3 - "$EXPECT_ROWS" "${MODELS[@]}" -- "${CASE_FILES[@]}" <<'PYEOF' || { echo "could not record the (model, case) pairs this run owes" >&2; exit 1; }
 import json, sys
 out = sys.argv[1]; rest = sys.argv[2:]; sep = rest.index("--")
 models, files = rest[:sep], rest[sep + 1:]
@@ -165,7 +185,9 @@ fi
 if [ -e "$STAGING" ] && [ ! -f "$STAGING" ]; then
     echo "refusing to write $STAGING — it exists and is not a regular file" >&2; exit 1
 fi
-if [ -e "$STAGING" ] && [ "$(stat -f %l "$STAGING" 2>/dev/null || echo 1)" -gt 1 ]; then
+# `|| echo 2`, not 1: a stat that fails is not evidence of a single link, and the appender's
+# own fstat check behind this is the defence — this pre-check must not be the one that opens.
+if [ -e "$STAGING" ] && [ "$(stat -f %l "$STAGING" 2>/dev/null || echo 2)" -gt 1 ]; then
     echo "refusing to write $STAGING — it is hard-linked elsewhere" >&2; exit 1
 fi
 # A previous run's partial results are evidence someone may be mid-investigation. Round 3
@@ -270,7 +292,7 @@ sys.exit(0 if d.get("id") == int(sys.argv[1]) else 1)
 ' "$want" 2>/dev/null && printf '%s' "$line")
             [ -n "$hit" ] && { RESPONSE="$hit"; return 0; }
         done
-        server_alive || { echo "server exited: $(tail -3 "$TMP/stderr")" >&2; return 1; }
+        server_alive || { echo "server exited: $(tail -3 "$TMP/stderr" | scrub)" >&2; return 1; }
         sleep 0.2
     done
     echo "timed out after ${TIMEOUT}s waiting for response id=$want" >&2
@@ -326,7 +348,10 @@ PYEOF
             RPC_ID=$((RPC_ID + 1))
             request=$(python3 "$RPC" request \
                           --case-file "$case_file" --index "$idx" --id "$RPC_ID" --model "$model")
-            case_id=$(python3 -c 'import json,re,sys; print(re.sub(r"[\x00-\x1f\x7f-\x9f]", "?", str(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"])))' "$case_file" "$idx")
+            # The ROW carries the id verbatim — scored rows and the owed pairs do, and an error row
+            # with a sanitized id would never match its pair. Only the terminal line is sanitized.
+            case_id_raw=$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"]))' "$case_file" "$idx")
+            case_id=$(printf '%s' "$case_id_raw" | scrub)
             case_tool=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["tool"])' "$case_file" "$idx")
             printf '  %-28s ' "$case_id"
 
@@ -343,7 +368,7 @@ print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": s
                   "model": None, "elapsed_seconds": None, "finish_reason": None,
                   "text": None, "checks": [], "mechanical_ok": None,
                   "human_review": [], "error": "transport: no response from the server"},
-                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
+                 ensure_ascii=False))' "$case_id_raw" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
                 idx=$((idx + 1))
                 server_alive || break
                 continue
@@ -359,7 +384,7 @@ print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": s
                   "model": None, "elapsed_seconds": None, "finish_reason": None,
                   "text": None, "checks": [], "mechanical_ok": None,
                   "human_review": [], "error": "scoring failed"},
-                 ensure_ascii=False))' "$case_id" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
+                 ensure_ascii=False))' "$case_id_raw" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
                 idx=$((idx + 1))
                 continue
             fi

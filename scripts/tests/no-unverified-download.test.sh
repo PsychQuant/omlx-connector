@@ -37,6 +37,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURES="$ROOT/scripts/tests/fixtures"
 PASS=0
 FAIL=0
+# THE ACCOUNTING RUNS IN THE EXIT TRAP — see eval-checks.test.sh: a count at the bottom of
+# the file guards nothing that exits early. Round 6 put it at the bottom.
+EXPECTED_CASES=12
+finish_suite() {
+    echo
+    echo "  $PASS passed, $FAIL failed"
+    if [ $((PASS + FAIL)) -ne "$EXPECTED_CASES" ]; then
+        echo "  FAIL — suite ran $((PASS + FAIL)) case(s), expected $EXPECTED_CASES; a case was added, removed, or exited early."
+        FAIL=$((FAIL + 1))
+    fi
+    [ "$FAIL" -eq 0 ] && exit 0 || exit 1
+}
+trap finish_suite EXIT
 
 ok()  { echo "  ok   — $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL — $1"; FAIL=$((FAIL + 1)); }
@@ -178,13 +191,3 @@ else
     done < <(find "$FIXTURES" -type f ! -name 'README.md' | sort)
 fi
 
-echo
-echo "  $PASS passed, $FAIL failed"
-# This suite counts itself too — see eval-checks.test.sh for why a count is not enough and
-# still worth having: it catches a deleted case, which is the cheapest silent weakening.
-EXPECTED_CASES=12
-if [ $((PASS + FAIL)) -ne "$EXPECTED_CASES" ]; then
-    echo "  FAIL — suite ran $((PASS + FAIL)) case(s), expected $EXPECTED_CASES; a case was added or removed."
-    FAIL=$((FAIL + 1))
-fi
-[ "$FAIL" -eq 0 ]

@@ -50,7 +50,9 @@ ROW_FIELDS = {"task", "category", "matched", "model", "finish_reason", "elapsed_
 # a forged second line — line forging being the simplest way to forge a verdict. And it was
 # applied to `model` only; `finish_reason`, `error`, case ids and the review prompts all reached
 # the terminal raw.
-_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+# …plus U+2028 and U+2029: not control characters, but LINE and PARAGRAPH SEPARATOR by name,
+# and str.splitlines() breaks on them — the same class as the one-walk fix in iter_rows().
+_UNSAFE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def safe(value, limit=None):
@@ -276,12 +278,8 @@ def read_rows(path):
     measured = errored = malformed = 0
     pairs = []
     try:
-        for line in open(path, encoding="utf-8"):
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
+        for row in iter_rows(path):
+            if row is None:
                 malformed += 1
                 continue
             pairs.append((row.get("model_requested") or "", row.get("case") or ""))
@@ -292,6 +290,26 @@ def read_rows(path):
     except OSError:
         pass
     return measured, errored, malformed, pairs
+
+
+def iter_rows(path):
+    """THE ONE WALK over a results file; `complete` and `summarize` both take it.
+
+    They used to walk it two ways: file iteration (universal newlines) here, and
+    str.splitlines() in summarize — which also breaks on U+2028, U+2029 and U+0085, none of
+    which json.dumps escapes. A reply carrying U+2028 was one clean row to the publish gate
+    and three malformed lines to the verdict, so run.sh replaced results.jsonl and then
+    reported the run was not a result (round 6's verify). Yields a dict per parseable row and
+    None per malformed line; raises OSError like open().
+    """
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                yield None
 
 
 def load_expected_pairs(path):
@@ -379,16 +397,12 @@ def cmd_summarize(args):
     flagged = []
     review = []
     try:
-        lines = open(args.out, encoding="utf-8").read().splitlines()
+        rows = list(iter_rows(args.out))   # the same walk `complete` takes — see iter_rows
     except OSError as e:
         print(f"  cannot read {args.out}: {e}", file=sys.stderr)
         return 1
-    for line in lines:
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
+    for row in rows:
+        if row is None:
             malformed += 1
             continue
         pairs.append((row.get("model_requested") or "", row.get("case") or ""))

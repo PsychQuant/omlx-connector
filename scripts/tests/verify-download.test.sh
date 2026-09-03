@@ -43,7 +43,28 @@ check() {  # check <description> <expected: pass|refuse> <candidate> <sumfile>
 }
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/verify-download-test-XXXXXX")
-trap 'rm -rf "$TMP"' EXIT
+# THE ACCOUNTING RUNS IN THE EXIT TRAP, for the reason eval-checks.test.sh gives: a count at
+# the bottom of the file guards nothing that exits early. Round 6 put it at the bottom.
+EXPECTED_CASES=10   # PASS + FAIL + SKIP: the positive case needs DEVELOPER_ID, so a skip is legitimate here
+finish_suite() {
+    rm -rf "$TMP"
+    echo
+    echo "  $PASS passed, $FAIL failed, $SKIP skipped"
+    if [ $((PASS + FAIL + SKIP)) -ne "$EXPECTED_CASES" ]; then
+        echo "  FAIL — suite ran $((PASS + FAIL + SKIP)) case(s), expected $EXPECTED_CASES; a case was added, removed, or exited early."
+        FAIL=$((FAIL + 1))
+    fi
+    if [ "$SKIP" -gt 0 ] && [ "${REQUIRE_FULL_SUITE:-}" = "1" ]; then
+        echo "  REQUIRE_FULL_SUITE=1 and $SKIP case(s) did not run — treating as failure." >&2
+        exit 1
+    fi
+    if [ "$SKIP" -gt 0 ]; then
+        echo "  note: $SKIP case(s) did not run. Set DEVELOPER_ID to run them all," >&2
+        echo "        and REQUIRE_FULL_SUITE=1 to make a skip fail." >&2
+    fi
+    [ "$FAIL" -eq 0 ] && exit 0 || exit 1
+}
+trap finish_suite EXIT
 
 printf 'genuine payload\n' > "$TMP/real"
 shasum -a 256 "$TMP/real" > "$TMP/real.sha256"
@@ -156,23 +177,3 @@ TeamIdentifier=$TEAM_ID" "$TMP/forged" 2>/dev/null; then
     fi
 fi
 
-echo
-echo "  $PASS passed, $FAIL failed, $SKIP skipped"
-# This suite counts itself too (the eval-checks suite introduced the discipline; round 5's
-# verify noted that deleting a case from THIS file was still invisible). A skip here can be
-# legitimate — the positive case needs DEVELOPER_ID — so skips count toward the total.
-EXPECTED_CASES=10
-if [ $((PASS + FAIL + SKIP)) -ne "$EXPECTED_CASES" ]; then
-    echo "  FAIL — suite ran $((PASS + FAIL + SKIP)) case(s), expected $EXPECTED_CASES; a case was added or removed."
-    FAIL=$((FAIL + 1))
-fi
-
-if [ "$SKIP" -gt 0 ] && [ "${REQUIRE_FULL_SUITE:-}" = "1" ]; then
-    echo "  REQUIRE_FULL_SUITE=1 and $SKIP case(s) did not run — treating as failure." >&2
-    exit 1
-fi
-if [ "$SKIP" -gt 0 ]; then
-    echo "  note: $SKIP case(s) did not run. Set DEVELOPER_ID to run them all," >&2
-    echo "        and REQUIRE_FULL_SUITE=1 to make a skip fail." >&2
-fi
-[ "$FAIL" -eq 0 ]

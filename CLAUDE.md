@@ -412,7 +412,7 @@ accident. The *checks* it applies are pure text functions and are unit-tested in
 suite (`scripts/tests/eval-checks.test.sh`), so they stay verified where no model exists.
 
 The trap it is built against is the one every eval harness falls into: plausible rows, nothing
-actually asserted — and six review rounds later it is still being found, in a way worth recording because
+actually asserted — and review round after review round it is still being found, in a way worth recording because
 each round's fix was correct and insufficient in the same shape.
 
 Round 1 shipped checks calling themselves "mutation-proven in both directions". That held only
@@ -472,9 +472,22 @@ per-run token the mutant must carry; per-fixture counting for the add-direction 
 wrote the blind spot into the suite and the README **with the families named**, and did not
 build the next layer. The reason is not fatigue. A second mutant family for `rpc.py` would
 need a guard, that guard would need a guard, and the Devil's Advocate has found the next
-square six times running. The honest statement is the one the suite now carries: here is
+square in every round so far. The honest statement is the one the suite now carries: here is
 exactly where the self-verification ends, and past it the property is "someone with write
 access to the test file can weaken it", which no test file can hold about itself.
+
+Round seven is the round-6 statement tested. Half of what it found was the declaration being
+wrong in the small: "per-fixture counting" was true for two of four guards and the other two
+were hard-coded constants; the blind-spot numbers were round 5's beside a count that had
+moved; the token gate that closed the ambient-variable bypass interpolated the token into a
+grep pattern, so a token carrying a newline reopened it. The other half was ordinary: the
+case-id check sat after the `--ping` preflight, so `make test` needed a live oMLX for one
+assertion and left `.partial` files in the repo when it had one; `complete` and `summarize`
+walked the JSONL two different ways and a reply carrying U+2028 got the previous
+`results.jsonl` destroyed; a bash ternary without parentheses assigned the accumulator instead
+of adding to it. None of that is a new class. It is the same one, and the reason to record it
+is the one this file keeps arriving at: the sentence that says a thing is closed is where the
+next defect is found.
 
 **The sweep is still not part of `make test`** — it takes ~30 suite runs — so the claim remains
 about a point in time. When you change a check or a table, re-run it, and expect the class you

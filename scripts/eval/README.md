@@ -16,7 +16,7 @@ make eval MODELS="--model A --model B --model C"      # the comparison that matt
 | `0` | the run happened and every mechanical check passed |
 | `2` | the run happened and there are **findings** — a model did badly, which is data, not a build failure |
 | `1` | the run did **not** happen: nothing measured, a tool/transport/malformed failure, or rows that are not the (model, case) pairs the run owed — too few, too many, duplicated, or for the wrong cases |
-| `64` | usage error (`EX_USAGE`) — a bad flag, a malformed environment value, the same model or case file given twice. In **every** program of the harness: round 4 fixed `run.sh` alone and left `check.py`/`rpc.py` at argparse's 2 |
+| `64` | usage error (`EX_USAGE`) — a bad flag, a malformed environment value, the same model or case file given twice, the same case **id** in two files. Decided from the arguments and the case files, before any server is contacted. In **every** program of the harness: round 4 fixed `run.sh` alone and left `check.py`/`rpc.py` at argparse's 2 |
 
 A malformed *case file* is `1`, not `64`: the run did not happen. The line is flags-and-
 environment versus input files, and it is drawn there so that "the harness was invoked
@@ -129,10 +129,12 @@ updated on purpose when fixtures change, like the count itself.
 **What the canary does not see — measured in round 5, with the families named.** A canary
 sees only an assertion whose verdict flips under one of the three mutants. Two families do
 not: everything after the canary exit (the `rpc.py` score / summarize / complete / append
-cases, the `run.sh` end-to-end cases, the manifest, the served-model call site — 62 of 248
-assertions in round 5), and assertions that check an *exit code* or a table's *membership*
-rather than a verdict (`usage64()`, `guard()`, the probe-coverage and add-direction checks —
-23 of 248). Neutering any one of those helpers is a single-line edit that touches no fixture
+cases, the `run.sh` end-to-end cases, the manifest, the served-model call site — 73 of
+336 assertions, measured in round 7), and assertions that check an *exit code* or a table's
+*membership* rather than a verdict (`usage64()`, `guard()`, the probe-coverage and add-direction
+checks — 89 of 336). Those two numbers move with the count and are re-measured
+with it; round 6 printed round 5's beside a count that had already changed. Neutering any one
+of those helpers is a single-line edit that touches no fixture
 and no constant and leaves the count and all three canaries unchanged; so is neutering the
 canary's own comparison. Round 5's verify did each of these and showed a real defect escaping
 behind it. Round 6 closed the two that were one line each — the ambient-variable bypass now
@@ -221,8 +223,9 @@ prose in `human_review`, while this file claimed automating them "needs a labell
 repo does not have".
 
 With `expect_row.category` and `expect_row.matched`, the round-5 live run — `run.sh`'s
-per-case lines verbatim, elapsed and served id included, because two earlier versions of this
-block printed output no run could produce:
+per-case lines verbatim, elapsed and served id included (the blank lines `run.sh` prints
+between sections are elided), because two earlier versions of this block printed output no
+run could produce:
 
 ```
 model: mlx-community--Qwen3-0.6B-4bit

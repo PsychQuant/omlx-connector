@@ -49,6 +49,10 @@ for line in sys.stdin:
         calls += 1
         if calls > answer:
             if mode == "die":
+                # STUB_STDERR lets a test plant control codepoints in the process's own stderr,
+                # which run.sh quotes in its "server exited:" line — server-authored, like the
+                # banner and the served id, and filtered a round later than both.
+                sys.stderr.write(os.environ.get("STUB_STDERR", "stub: dying") + "\n"); sys.stderr.flush()
                 os._exit(3)
             time.sleep(3600)      # answer nothing, ever
         if mode == "toolerror":

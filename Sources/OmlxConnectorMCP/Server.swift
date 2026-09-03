@@ -307,8 +307,9 @@ final class OmlxConnectorServer {
         return try render(result, extra: ["task": "rewrite"])
     }
 
-    /// Which of the caller's categories a reply names. An exact match — after stripping the
-    /// decoration small models add ("Category: X.", quotes, brackets) — wins; otherwise the
+    /// Which of the caller's categories a reply names. An exact match — after trimming the
+    /// punctuation, quotes and brackets small models wrap a label in — wins; a prefixed form
+    /// such as "Category: X." is NOT exact and resolves through the next clause. Otherwise the
     /// UNIQUE category the reply contains, where a contained label that is itself a substring
     /// of another contained label does not count ("bug" inside "bug report"); otherwise none.
     ///

@@ -43,6 +43,9 @@ fi
 # path" for four review rounds while no release path ran the suite at all. This one does:
 # the suite needs no oMLX server (so signing cannot fail for want of one), and the single
 # case that needs DEVELOPER_ID has it here — so a skip is a failure, as the variable says.
+# "No server" was false for one assertion in round 6 and is tested now (every run.sh usage
+# case points OMLX_BASE_URL at a closed port). What the suite DOES run: a loopback stub
+# server, a stub MCP binary, three generated mutants of check.py, and itself four times.
 echo "→ running the hermetic test suite (REQUIRE_FULL_SUITE=1)"
 REQUIRE_FULL_SUITE=1 make test
 

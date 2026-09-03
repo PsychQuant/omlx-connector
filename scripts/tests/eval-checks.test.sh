@@ -48,9 +48,16 @@ if [ -n "${EVAL_CHECKS_CANARY:-}" ]; then
     # pointing at the real check.py: the suite ran 186 assertions, skipped its count, printed
     # CANARY_FAILS=0 and exited 0 — the mechanism shipping its own bypass. The parent writes a
     # per-run token into every mutant it builds; nothing else can produce a matching file.
-    if [ -z "${EVAL_CHECKS_CANARY_TOKEN:-}" ] || \
-       ! grep -q "^# canary-token: ${EVAL_CHECKS_CANARY_TOKEN}\$" "$EVAL_CHECKS_CANARY" 2>/dev/null; then
-        echo "  FAIL — EVAL_CHECKS_CANARY is set but carries no matching per-run token; refusing canary mode" >&2
+    # A PLAIN STRING COMPARED TO LINE 1 — not a grep pattern. Round 6 interpolated the token
+    # into a regex: a token carrying a newline was two patterns, `.*` matched every line of
+    # the real check.py, and the bypass this gate exists to close came back through it.
+    case "${EVAL_CHECKS_CANARY_TOKEN:-}" in
+        ''|*[![:alnum:]-]*)
+            echo "  FAIL — EVAL_CHECKS_CANARY_TOKEN is missing or is not a plain token; refusing canary mode" >&2
+            exit 1 ;;
+    esac
+    if [ "$(head -n 1 "$EVAL_CHECKS_CANARY" 2>/dev/null)" != "# canary-token: $EVAL_CHECKS_CANARY_TOKEN" ]; then
+        echo "  FAIL — EVAL_CHECKS_CANARY does not open with this run's token; refusing canary mode" >&2
         exit 1
     fi
     CHECK="$EVAL_CHECKS_CANARY"
@@ -86,13 +93,14 @@ FAKE_PID=""
 # a message, not a pass with a footnote. Round 4 also found that the fake-oMLX block
 # contributed exactly one unit to the count whether it ran or skipped, so the only test able
 # to see the served-model call site could vanish silently.
-EXPECTED_CASES=326       # updated ON PURPOSE when a case is added or removed — see the tail
+EXPECTED_CASES=336       # updated ON PURPOSE when a case is added or removed — see the tail
 finish_suite() {
     local rc=0
     [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
     rm -rf "$SUITE_TMP"
     if [ -n "$CANARY_MODE" ]; then
         echo "CANARY_FAILS=$FAIL"
+        echo "CANARY_RAN=$((PASS + FAIL))"   # measurement only: the blind-spot numbers below come from here
         exit 0
     fi
     echo
@@ -407,7 +415,12 @@ corpus ok "no pattern flags ordinary content (false-positive corpus)" \
     '我將為你保留一個位置。' \
     '我會在明天幫你完成報告。' \
     '我來幫你做好準備。' \
-    '我將幫你寫好推薦信。'
+    '我將幫你寫好推薦信。' \
+    '我已經讀過這份摘要了。' \
+    '我會把這份總結留到下週再看。' \
+    '我來翻譯這段文字給你聽，順便說明背景。' \
+    'I will outline my concerns in the next section.' \
+    'I have translated this passage before, for a different client.'
 
 corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
     'Here is a summary of the text: the deadline moved.' \
@@ -430,7 +443,9 @@ corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
     '**Here is a summary:** the deadline moved.' \
     'Of course! Here is the summary: the deadline moved.' \
     '我已經把摘要整理好了：期限延到四月五日。' \
-    '我已經幫你把報告寫好了。'
+    '我已經幫你把報告寫好了。' \
+    "I've summarized the key points:" \
+    "I've summarized the key points below."
 
 # --- script_purity: both directions, so the set cannot be silently emptied ---------
 # RED-first: 紫 (紫色) and 凰 (鳳凰) are the SAME codepoint in both scripts; 划 (划船,
@@ -608,7 +623,9 @@ if [ -z "$bad" ]; then
     PASS=$((PASS + NSENT))
 else
     echo "  FAIL — these members of _SIMPLIFIED_ONLY occur in ordinary Traditional text: $bad"
-    FAIL=$((FAIL + ${#bad})); PASS=$((PASS + NSENT > ${#bad} ? NSENT - ${#bad} : 0))
+    # Parenthesised: `+` binds tighter than `>` and `?:`, so without them this line ASSIGNED
+    # `NSENT - bad` to PASS and threw the whole accumulator away (round 6's verify).
+    FAIL=$((FAIL + ${#bad})); PASS=$((PASS + (NSENT > ${#bad} ? NSENT - ${#bad} : 0)))
 fi
 
 # The same direction for the preamble patterns: no pattern may match the clean corpus.
@@ -639,15 +656,19 @@ fi
 # PER-CHARACTER membership, not per-line. Round 3's probes are one per line, so deleting a
 # single character was invisible — including 么, the character whose removal was round 2's
 # headline regression (什么 passing silently).
-missing=$(python3 - "$CHECK" <<'INNER'
+# DERIVED, NOT WRITTEN DOWN. Round 6 declared "per-fixture counting" and left this constant
+# as `NMUST=43`: deleting 么 from the probe string kept the suite at 326/0 and printed
+# "43 probes" for 42 — a count that no longer counted anything, in the guard whose whole
+# purpose is that removing one marker is one red.
+MUST_PROBES="么听圣坏复宁庄怀惊扑扰网胜赶适吨这说时实发关应结国学对会门长问风飞鱼鸟龙齐题预领"
+NMUST=$(python3 -c 'import sys; print(len(sys.argv[1]))' "$MUST_PROBES")
+missing=$(python3 - "$CHECK" "$MUST_PROBES" <<'INNER'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-must = "么听圣坏复宁庄怀惊扑扰网胜赶适吨这说时实发关应结国学对会门长问风飞鱼鸟龙齐题预领"
-print("".join(c for c in must if c not in m._SIMPLIFIED_ONLY))
+print("".join(c for c in sys.argv[2] if c not in m._SIMPLIFIED_ONLY))
 INNER
 )
-NMUST=43   # the length of `must` above; per-character so removing one marker is one red
 if [ -z "$missing" ]; then
     echo "  ok   — every named high-frequency Simplified marker is still in the set ($NMUST probes)"
     PASS=$((PASS + NMUST))
@@ -656,19 +677,21 @@ else
     FAIL=$((FAIL + ${#missing})); PASS=$((PASS + NMUST - ${#missing}))
 fi
 # ...and the four that must stay OUT, so round 1's false positives cannot return.
-back=$(python3 - "$CHECK" <<'INNER'
+BACK_PROBES="紫凰划据"
+NBACK=$(python3 -c 'import sys; print(len(sys.argv[1]))' "$BACK_PROBES")
+back=$(python3 - "$CHECK" "$BACK_PROBES" <<'INNER'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-print("".join(c for c in "紫凰划据" if c in m._SIMPLIFIED_ONLY))
+print("".join(c for c in sys.argv[2] if c in m._SIMPLIFIED_ONLY))
 INNER
 )
 if [ -z "$back" ]; then
-    echo "  ok   — the four Traditional characters round 1 wrongly flagged are still out (4 probes)"
-    PASS=$((PASS + 4))
+    echo "  ok   — the Traditional characters round 1 wrongly flagged are still out ($NBACK probes)"
+    PASS=$((PASS + NBACK))
 else
     echo "  FAIL — these Traditional characters are back in the set: $back"
-    FAIL=$((FAIL + ${#back})); PASS=$((PASS + 4 - ${#back}))
+    FAIL=$((FAIL + ${#back})); PASS=$((PASS + NBACK - ${#back}))
 fi
 
 # --- category_member: brackets a CJK model actually uses --------------------------
@@ -724,15 +747,37 @@ usage64 "run.sh: a non-numeric timeout is a usage error"  env OMLX_EVAL_TIMEOUT=
 # A9: the same model or case file twice is a usage error, not a doubled run. Round 4 found
 # `--model stub --model stub` producing 10 rows at exit 0, the accounting consistent with
 # itself because both the preflight and the run read the same duplicated array.
-usage64 "run.sh: the same model twice is a usage error"   "$REPO/scripts/eval/run.sh" --model a --model a
-usage64 "run.sh: the same case file twice is a usage error" "$REPO/scripts/eval/run.sh" --model a \
+# NO SERVER IS CONTACTED BY ANY OF THESE. OMLX_BASE_URL points at a closed port and --out at
+# scratch, because round 6 placed the case-id check AFTER run.sh's `--ping` preflight: with no
+# oMLX the preflight exited 1 first, `make test` needed a live server to stay green, and the
+# release gate that cites "the suite needs no oMLX server" failed for want of one — while,
+# with a server up, the test ran a real request against it for a model named "a" and left
+# results.jsonl.partial files in the repo. A usage error is decided from the arguments.
+usage64 "run.sh: the same model twice is a usage error" \
+    env OMLX_BASE_URL=http://127.0.0.1:1 "$REPO/scripts/eval/run.sh" --model a --model a --out "$SUITE_TMP/dup.jsonl"
+usage64 "run.sh: the same case file twice is a usage error" \
+    env OMLX_BASE_URL=http://127.0.0.1:1 "$REPO/scripts/eval/run.sh" --model a --out "$SUITE_TMP/dup.jsonl" \
     --cases "$REPO/scripts/eval/cases/summarize.json" --cases "$REPO/scripts/eval/cases/summarize.json"
 # Round 5 deduplicated by realpath, which is a spelling of the property, not the property: a
 # byte-identical copy, or a hard link, doubled the run with self-consistent books. The
-# property is "the same case id twice", checked across every file at preflight.
+# property is "the same case id twice", checked across every file before anything runs.
 cp "$REPO/scripts/eval/cases/summarize.json" "$SUITE_TMP/copy-of-summarize.json"
-usage64 "run.sh: the same case id in two files is a usage error" "$REPO/scripts/eval/run.sh" --model a \
+usage64 "run.sh: the same case id in two files is a usage error, decided before any server is contacted" \
+    env OMLX_BASE_URL=http://127.0.0.1:1 "$REPO/scripts/eval/run.sh" --model a --out "$SUITE_TMP/dup.jsonl" \
     --cases "$REPO/scripts/eval/cases/summarize.json" --cases "$SUITE_TMP/copy-of-summarize.json"
+# ...and the check must not fail OPEN. Round 6's dup-id parser was `dupid=$(python3 …)` with the
+# exit status discarded: a case without an `id` raised KeyError, the variable was empty, and
+# the run proceeded — to owe rows for pairs it could not name.
+NOID="$SUITE_TMP/noid.json"
+printf '{"cases":[{"tool":"local_summarize","text":"x","expect":{}}]}' > "$NOID"
+noid_out=$(env OMLX_BASE_URL=http://127.0.0.1:1 "$REPO/scripts/eval/run.sh" --model a --cases "$NOID" --out "$SUITE_TMP/noid.jsonl" 2>&1); noid_rc=$?
+if [ "$noid_rc" = "1" ] && printf '%s' "$noid_out" | grep -q 'unreadable case file'; then
+    echo "  ok   — run.sh: a case without an id is an unreadable case file (exit 1), not a run"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — run.sh: a case without an id should be refused as unreadable (exit $noid_rc: $(printf '%s' "$noid_out" | tail -1))"
+    FAIL=$((FAIL + 1))
+fi
 
 # --- guards must actually guard. Kills deletion of the three raise ValueError. -----
 # Requires 64, not merely non-zero. The round-5 sweep deleted label_is's gold guard and the
@@ -807,10 +852,13 @@ if [ -n "$CANARY_MODE" ]; then exit 0; fi
 # blind families:
 #   1. everything after the canary exit below never runs in canary mode at all — the
 #      rpc.py score / summarize / complete / append cases, run.sh end-to-end, the manifest,
-#      the served-model call site (62 of 248 assertions in round 5);
+#      the served-model call site (73 of 336 assertions);
 #   2. assertions that check an EXIT CODE or a table's MEMBERSHIP rather than a verdict —
 #      usage64(), guard(), the probe-coverage and add-direction checks — run in canary mode
-#      but pass under every mutant (23 of 248 in round 5).
+#      but pass under every mutant (89 of 336).
+#   The numbers are measured at the same time as EXPECTED_CASES and go stale the moment it
+#   moves: round 6 declared round 5's (62 + 23 of 248) beside a count of 326. Re-measure
+#   both — CANARY_RAN is printed by the child for exactly this — when the count changes.
 # Neutering any one of those helpers — `if …; then` → `if true; then` — is a single-line
 # edit that touches no fixture and no constant and leaves count and canaries unchanged. So
 # is neutering canary()'s own comparison. Round 5's verify did all of these and showed a
@@ -818,8 +866,8 @@ if [ -n "$CANARY_MODE" ]; then exit 0; fi
 # next layer would be a second mutant family for rpc.py and a guard for canary(), and the
 # layer after that is the same question again. A suite cannot be immune to someone with
 # write access to it; this file stops at saying precisely where that immunity ends.
-CANARY_ALWAYS_OK=93
-CANARY_ALWAYS_NOTOK=74
+CANARY_ALWAYS_OK=95
+CANARY_ALWAYS_NOTOK=79
 CANARY_OFF_BY_ONE=8
 
 canary() {  # canary <label> <mutant-path> <expected fails>
@@ -839,7 +887,7 @@ canary() {  # canary <label> <mutant-path> <expected fails>
 }
 MUT="$SUITE_TMP/mutants"; mkdir -p "$MUT"
 CANARY_TOKEN="$$-$RANDOM-$RANDOM-$(date +%s)"
-python3 - "$CHECK" "$MUT" "$CANARY_TOKEN" <<'INNER'
+python3 - "$CHECK" "$MUT" "$CANARY_TOKEN" <<'INNER' || { echo "  FAIL — the canary mutant builder failed; no canary ran"; FAIL=$((FAIL + 1)); exit 1; }
 import pathlib, sys
 src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 out = pathlib.Path(sys.argv[2])
@@ -873,6 +921,21 @@ if [ "$bypass_rc" != "0" ]; then
     PASS=$((PASS + 1))
 else
     echo "  FAIL — an ambient EVAL_CHECKS_CANARY switched the suite into canary mode and it exited 0"
+    FAIL=$((FAIL + 1))
+fi
+
+# A TOKEN IS NOT A PATTERN. Round 6's gate interpolated the token into a grep regex, so a
+# token carrying a newline became TWO patterns, and a second pattern of `.*` matched every
+# line of the real check.py: canary mode re-entered against the unmutated file and the
+# suite exited 0 — round 5's bypass, back through the fix. The gate now compares line 1 of
+# the file to the token as a plain string, and a token containing a newline is refused.
+inj_rc=$(EVAL_CHECKS_CANARY="$CHECK" EVAL_CHECKS_CANARY_TOKEN="x
+.*" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; echo $?)
+if [ "$inj_rc" != "0" ]; then
+    echo "  ok   — a token carrying a newline (a second grep pattern) is refused (exit $inj_rc)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — a newline in EVAL_CHECKS_CANARY_TOKEN turned the gate into two grep patterns and the suite exited 0"
     FAIL=$((FAIL + 1))
 fi
 
@@ -1176,6 +1239,34 @@ sumjson() {  # sumjson <description> <expected exit> <expected measured> <jsonl 
         echo "         $out"; FAIL=$((FAIL + 1))
     fi
 }
+# ONE WALK. `complete` iterated the file (universal newlines) while `summarize` used
+# str.splitlines(), which also breaks on U+2028, U+2029 and U+0085 — codepoints json.dumps
+# leaves unescaped in a reply. Round 6's verify put U+2028 in a model reply: `complete` saw
+# one clean row and let run.sh publish, `summarize` then read the same bytes as three
+# malformed lines and said the run was not a result — and the previous results.jsonl was gone.
+U2028_ROW=$(python3 -c 'import json; print(json.dumps({"case":"c1","model_requested":"m","model":"m","text":"one\u2028two","checks":[{"check":"non_empty","ok":True}],"human_review":[]}, ensure_ascii=False))')
+u2028_f="$SUITE_TMP/u2028.jsonl"; printf '%s\n' "$U2028_ROW" > "$u2028_f"; printf '[["m","c1"]]' > "$u2028_f.exp"
+python3 "$RPC" complete  --out "$u2028_f" --expect-rows "$u2028_f.exp" --expected 1 >/dev/null 2>&1; u_c=$?
+python3 "$RPC" summarize --out "$u2028_f" --expect-rows "$u2028_f.exp" --expected 1 >/dev/null 2>&1; u_s=$?
+if [ "$u_c" = "0" ] && [ "$u_s" = "0" ]; then
+    echo "  ok   — complete and summarize walk a row containing U+2028 the same way (one row, both exit 0)"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — complete and summarize disagree on a row containing U+2028 (complete=$u_c summarize=$u_s)"
+    FAIL=$((FAIL + 1))
+fi
+# ...and the same two codepoints are line forgers for any splitlines() consumer of the
+# terminal output, so safe() strips them like C0/C1.
+U2028_ID=$(python3 -c 'import json; print(json.dumps({"case":"c1","model_requested":"m","model":"m\u2028forged","text":"one","checks":[{"check":"non_empty","ok":False}],"human_review":[]}, ensure_ascii=False))')
+sumjson "a served id carrying U+2028 still renders (findings, one row)" 2 1 "$U2028_ID
+"
+if printf '%s' "$SUM_OUT" | grep -q "$(printf '\xe2\x80\xa8')"; then
+    echo "  FAIL — U+2028 from a served id reached the terminal unstripped"
+    FAIL=$((FAIL + 1))
+else
+    echo "  ok   — U+2028 in a served id is stripped before it reaches the terminal"
+    PASS=$((PASS + 1))
+fi
 # The reproduction from the verify report: five rows, every one a recorded tool error.
 sumjson "all-errors run exits non-zero and reports measured=0" 1 0 \
 '{"case":"a","error":"Error: down","mechanical_ok":null,"checks":[]}
@@ -1347,6 +1438,23 @@ if [ ! -x "$STUB" ]; then
 else
     runsh_case "a run where 4 of 5 cases time out does NOT exit 0" 1 silent 1
     runsh_case "a run whose server dies mid-way does NOT exit 0"   1 die    1
+    # THE THIRD SERVER-AUTHORED PATH TO THE TERMINAL. Round 6 filtered the --ping banner and
+    # the served id, and left `server exited: $(tail -3 stderr)` — the process's own stderr —
+    # raw. A C1 CSI in it reaches the operator's terminal unfiltered.
+    DIE_OUT=$(OMLX_EVAL_BINARY="$STUB" STUB_MODE=die STUB_ANSWER_CALLS=1 OMLX_EVAL_TIMEOUT=3 \
+              STUB_STDERR="$(printf 'crash \xc2\x9b2K forged verdict')" \
+              "$RUNSH" --model stub --out "$SUITE_TMP/die-$RANDOM.jsonl" \
+              --cases "$REPO/scripts/eval/cases/summarize.json" 2>&1)
+    if ! printf '%s' "$DIE_OUT" | grep -q 'server exited'; then
+        echo "  FAIL — the server-exited branch was not reached, so its output was not tested"
+        FAIL=$((FAIL + 1))
+    elif printf '%s' "$DIE_OUT" | grep -q "$(printf '\xc2\x9b')"; then
+        echo "  FAIL — a C1 codepoint from the server's stderr reached the terminal via 'server exited:'"
+        FAIL=$((FAIL + 1))
+    else
+        echo "  ok   — the server's own stderr is filtered before 'server exited:' prints it"
+        PASS=$((PASS + 1))
+    fi
     # A1: the TOOL-error branch — round 1's entire subject — was unreachable in this suite
     # because the stub only ever produced transport failures. Round 4 shipped `re.sub` one
     # line above `import re` on exactly that branch, so every recorded tool error printed a
