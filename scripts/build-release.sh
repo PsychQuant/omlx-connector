@@ -32,6 +32,7 @@ BUNDLE_NAME="omlx-connector"
 DIST_DIR="dist"
 MCPB_DIR="mcpb"
 
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 : "${DEVELOPER_ID:?DEVELOPER_ID not set — see README 'Signing & notarization'}"
@@ -45,7 +46,8 @@ fi
 # case that needs DEVELOPER_ID has it here — so a skip is a failure, as the variable says.
 # "No server" was false for one assertion in round 6 and is tested now (every run.sh usage
 # case points OMLX_BASE_URL at a closed port). What the suite DOES run: a loopback stub
-# server, a stub MCP binary, three generated mutants of check.py, and itself four times.
+# server, a stub MCP binary, three generated mutants of check.py, and itself — once per mutant
+# and once per gate probe (a number, so not written down: the last one was wrong by one).
 echo "→ running the hermetic test suite (REQUIRE_FULL_SUITE=1)"
 REQUIRE_FULL_SUITE=1 make test
 

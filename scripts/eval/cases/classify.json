@@ -41,7 +41,7 @@
       },
       "human_review": [
         "Issue #1 observed a 0.6B answering `positive` here. row.category now decides correct/incorrect; what is left for you is whether a wrong answer was a near miss (neutral) or an inversion (positive).",
-        "If category_member FLAGs while row.category stays green, the model was right but decorated its answer ('Category: negative.'). If both FLAG, read `text`: since round 5 a reply naming two options is unmatched, so 'not positive; negative' — a right answer — lands here too. That is the safe direction (a FLAG on a right answer, never a PASS on a wrong one), and it is a limit, not a verdict."
+        "If category_member FLAGs while row.category stays green, the model was right but decorated its answer ('Category: negative.'). If both FLAG, read `text`: since round 5 a reply naming two options is unmatched, so 'not positive; negative' — a right answer — lands here too. That is the safe direction for replies naming two options (a FLAG on a right answer). It is not a guarantee: a wrong answer that names exactly one label — 'This is not negative.' names only negative — still matches it, and row.category passes. The harness does not read negation; a PASS here is not proof the answer was right. Read `text`."
       ],
       "expect_row": {
         "category": "negative"

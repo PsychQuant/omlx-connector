@@ -23,6 +23,7 @@ fi
 
 # Derive the plugin root from this script's own location. $CLAUDE_PLUGIN_ROOT is not
 # guaranteed to be present in the environment an MCP server is spawned into.
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN_JSON="$PLUGIN_ROOT/.claude-plugin/plugin.json"
 

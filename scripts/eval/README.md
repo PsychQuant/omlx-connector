@@ -54,7 +54,7 @@ measurement goes stale silently, and a stale one is worse than none.
 | `model`, `model_requested` | what oMLX actually served vs. what was asked for. Quantization is part of the id (`…-4bit`), so the id is recorded verbatim. This was an *echo* until `ChatResponse` was taught to decode the response's own `model` field — before that the two columns were identical by construction on the `--model` path, and this table described a distinction the code did not provide |
 | `elapsed_seconds` | wall clock for that call. First call to a cold model includes the load |
 | `finish_reason` | present **only** when the model did not stop on its own. A reply truncated at the token limit is a different finding from one that ignored the instruction |
-| `text` | the reply, verbatim. Read it — see below |
+| `text` | the reply, verbatim — model-authored and **unfiltered**, the one field the harness never sanitizes. Read it (see below) with `cat -v` or a pager, not a bare `cat`: the harness itself never prints it |
 | `checks`, `mechanical_ok` | the mechanical verdicts. **Not** `all_ok` — that name is the reading this whole file forbids, and it is what any downstream pass-rate would have taken. Includes `row.<field>` entries from a case's `expect_row` |
 | `text`, `text_field` | which payload key was checked. `local_classify` has no `text` key; it is scored on `raw_response` |
 | `category`, `matched` | `local_classify` only. `matched: false` is the issue's actual question about that tool |
@@ -118,22 +118,29 @@ the boundary, or hollowing a 21-entry corpus to one, were the same: the number c
 
 So the suite now re-runs itself against three deliberately broken copies of `check.py` —
 every check says ok, every check says not-ok, and `<= ceiling` made `<= ceiling + 1` — and
-requires **exactly** a pinned number of its own assertions to fail against each (currently
-93 / 74 / 8; the round-5 README said 90 / 69 / 8 because the constants were re-measured after
-it was written — the round-6 numbers here were measured last). That is the offline mutation sweep in miniature, inside `make test`, and it
+requires **exactly** a pinned number of its own assertions to fail against each. The three
+constants live in the suite beside `EXPECTED_CASES` and are **not repeated here**: a prose
+copy of them drifted from the suite in round 5 and again in round 7, the second time twelve
+lines from arithmetic that used the new values. That is the offline mutation sweep in miniature, inside `make test`, and it
 catches the three weakening mutations by construction: a neutered helper fails nothing, an
-off-boundary fixture no longer trips the off-by-one mutant, a hollowed corpus changes the
-count because corpora and probes are now counted **per fixture**. The three numbers are
-updated on purpose when fixtures change, like the count itself.
+off-boundary fixture no longer trips the off-by-one mutant, a corpus hollowed by **deletion**
+changes the count because corpora and probes are counted per fixture. A corpus hollowed by
+**replacement** — the same number of sentences, each saying less — does not, and the round-7
+verify did exactly that (two clean sentences → 「好。好。」, 謝 added to the Simplified set,
+336 / 0, 「謝謝大家的協助與體諒。」 flagged as Simplified in green). The suite's own
+`HONEST LIMIT` comment had already said it: corpora close the shapes they contain, not the
+property. The previous version of this sentence promised more than that. The three
+numbers are updated on purpose when fixtures change, like the count itself.
 
-**What the canary does not see — measured in round 5, with the families named.** A canary
+**What the canary does not see — families named in round 5, counts measured in the suite.** A canary
 sees only an assertion whose verdict flips under one of the three mutants. Two families do
 not: everything after the canary exit (the `rpc.py` score / summarize / complete / append
-cases, the `run.sh` end-to-end cases, the manifest, the served-model call site — 73 of
-336 assertions, measured in round 7), and assertions that check an *exit code* or a table's
-*membership* rather than a verdict (`usage64()`, `guard()`, the probe-coverage and add-direction
-checks — 89 of 336). Those two numbers move with the count and are re-measured
-with it; round 6 printed round 5's beside a count that had already changed. Neutering any one
+cases, the `run.sh` end-to-end cases, the manifest, the served-model call site), and
+assertions that check an *exit code* or a table's *membership* rather than a verdict
+(`usage64()`, `guard()`, the probe-coverage and add-direction checks). How many fall in each
+family is measured in the suite header beside the constants it is computed from, with the
+one-line command that re-measures it; this file carries no copy, for the reason just given.
+Neutering any one
 of those helpers is a single-line edit that touches no fixture
 and no constant and leaves the count and all three canaries unchanged; so is neutering the
 canary's own comparison. Round 5's verify did each of these and showed a real defect escaping

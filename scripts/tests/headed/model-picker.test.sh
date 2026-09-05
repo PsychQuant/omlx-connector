@@ -21,6 +21,7 @@
 # fail. That switch exists to be exercised, not to be believed.
 set -u
 
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 BINARY="$REPO/.build/debug/omlx-claude"
 OMLX_URL="${OMLX_URL:-http://127.0.0.1:8000}"

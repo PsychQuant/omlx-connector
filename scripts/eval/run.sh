@@ -20,6 +20,7 @@ set -u
 # short file. Ignoring it turns the write into an ordinary failure we can handle.
 trap '' PIPE
 
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BINARY="${OMLX_EVAL_BINARY:-$REPO/.build/debug/OmlxConnectorMCP}"
 CASE_DIR="$REPO/scripts/eval/cases"
@@ -39,11 +40,16 @@ case "$TIMEOUT" in
 esac
 [ "$TIMEOUT" -gt 0 ] || { echo "OMLX_EVAL_TIMEOUT must be positive" >&2; exit 64; }
 
-# SERVER-AUTHORED TEXT BOUND FOR THE TERMINAL goes through here: C0 except LF, DEL, C1, and
-# the two Unicode line separators, replaced by codepoint. Not `tr`, which works on bytes and
-# would corrupt a UTF-8 id. Three such paths exist — the --ping banner, the served id, and the
-# process's own stderr quoted in "server exited:" — and round 6 filtered two of them.
-scrub() { python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029]", "\ufffd", sys.stdin.read()))'; }
+# TEXT WE DID NOT AUTHOR, BOUND FOR THE TERMINAL, goes through one of these two — by codepoint,
+# not `tr`, which works on bytes and would corrupt a UTF-8 id. scrub() is for MULTI-LINE text
+# and keeps LF: the --ping banner (both the success and the failure branch) and the server's
+# own stderr quoted in "server exited:". scrub_line() is for text that must stay on ONE line
+# and strips LF and CR too: the per-case id in the status row, and every argument or case-file
+# value a usage message quotes. Round 7 used scrub() on the case id and reopened the newline
+# forgery that the inline filter it replaced had closed — a second, forged verdict row. The
+# served model id is not filtered here: it reaches the terminal only through rpc.py's safe().
+scrub()      { python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029]", "\ufffd", sys.stdin.read()))'; }
+scrub_line() { python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "\ufffd", sys.stdin.read()))'; }
 
 # A missing option value used to die with bash's raw "$2: unbound variable" under set -u,
 # while every other argument error here gets a named message.
@@ -71,13 +77,18 @@ done
 [ ${#CASE_FILES[@]} -gt 0 ] || CASE_FILES=("$CASE_DIR"/*.json)
 [ ${#MODELS[@]} -gt 0 ] || MODELS=("")   # "" = no model override; the server decides
 
+# python3 is needed by the first check below, not only by the run. Round 7's hoist left this
+# line under "Preconditions", after five python3 calls — unreachable for the reason it exists,
+# and the realpath dedup above it failed open without python3 (empty output reads as "no dup").
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+
 # The same model or case file twice is a usage error, not a doubled run. Round 4 found
 # `--model stub --model stub` producing ten rows at exit 0: the accounting was consistent
 # with itself because the preflight and the run read the same duplicated array.
 dup=$(printf '%s\n' "${MODELS[@]}" | sort | uniq -d | head -1)
-[ -z "$dup" ] || { echo "--model '$dup' given more than once" >&2; exit 64; }
+[ -z "$dup" ] || { echo "--model '$(printf '%s' "$dup" | scrub_line)' given more than once" >&2; exit 64; }
 dup=$(for f in "${CASE_FILES[@]}"; do python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$f"; done | sort | uniq -d | head -1)
-[ -z "$dup" ] || { echo "--cases '$dup' given more than once" >&2; exit 64; }
+[ -z "$dup" ] || { echo "--cases '$(printf '%s' "$dup" | scrub_line)' given more than once" >&2; exit 64; }
 
 # ARGUMENTS ARE JUDGED BEFORE ANY SERVER IS CONTACTED. Round 6 put the case-id check after
 # the --ping preflight: with no oMLX the preflight exited 1 before a usage error could, so the
@@ -101,11 +112,11 @@ for case_file in "${CASE_FILES[@]}"; do
         echo "no such case file: $case_file" >&2; exit 1
     fi
     if ! n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file" 2>&1); then
-        echo "unreadable case file $case_file: $n" >&2; exit 1
+        echo "unreadable case file $case_file: $(printf '%s' "$n" | scrub_line)" >&2; exit 1
     fi
     # Validated BEFORE it reaches `$(( ))` — the round-1 class, held as a property this time.
     # `2>&1` above means a python that exits 0 while writing to stderr would put text here.
-    case "$n" in ''|*[!0-9]*) echo "unreadable case file $case_file: $n" >&2; exit 1 ;; esac
+    case "$n" in ''|*[!0-9]*) echo "unreadable case file $case_file: $(printf '%s' "$n" | scrub_line)" >&2; exit 1 ;; esac
     if [ "$n" -eq 0 ]; then
         echo "case file has no cases: $case_file" >&2; exit 1
     fi
@@ -129,12 +140,11 @@ PYEOF
     # NOT `dupid=$(…)` with the status dropped. Round 6 did that: a case without an id raised
     # KeyError, the variable came back empty, and the check passed — fail-open, in the check
     # written against fail-open.
-    echo "unreadable case file: $dupid" >&2; exit 1
+    echo "unreadable case file: $(printf '%s' "$dupid" | scrub_line)" >&2; exit 1
 fi
-[ -z "$dupid" ] || { echo "case id(s) given more than once across --cases files: $dupid" >&2; exit 64; }
+[ -z "$dupid" ] || { echo "case id(s) given more than once across --cases files: $(printf '%s' "$dupid" | scrub_line)" >&2; exit 64; }
 
 # ── Preconditions ─────────────────────────────────────────────────────────────────
-command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
 [ -x "$BINARY" ] || {
     echo "not built: $BINARY" >&2
     echo "  run: swift build   (or set OMLX_EVAL_BINARY)" >&2
@@ -164,6 +174,30 @@ fi
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-eval.XXXXXX")
 SERVER_PID=""
+STAGING=""
+# THE TRAP IS INSTALLED ON THE LINE AFTER mktemp. It used to be installed sixty lines later,
+# after the staging checks, so every refusal between — symlink, directory, hard link, a failed
+# mv-aside, a failed --create, the owed-pairs writer round 7 added — left an omlx-eval.*
+# directory behind; the suite exercised two of those refusals on every run.
+cleanup() {
+    # NOT `exec 3>&- 2>/dev/null` — that form applies both redirections to the shell and
+    # is exactly what server_stop below documents as harmful. It survived here for a whole
+    # round because the fix was applied to the line a reviewer named.
+    exec 3>&-
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+    rm -rf "$TMP"
+    [ -n "$STAGING" ] || return 0
+    # STAGING lives beside $OUT, not in $TMP, so an interrupted or failed run leaves the
+    # rows it did measure on disk under a name that says what they are. Round 2: staging
+    # inside $TMP meant the cleanup trap destroyed every measured row on interrupt, and
+    # the mv failure branch destroyed the very rows it had failed to publish.
+    if [ -s "$STAGING" ]; then
+        echo "  partial results kept at: $STAGING" >&2
+    else
+        rm -f "$STAGING" 2>/dev/null
+    fi
+}
+trap cleanup EXIT
 # The (model, case) pairs this run owes. Both the publish gate and the verdict compare the
 # rows against this multiset — identity, not a number.
 EXPECT_ROWS="$TMP/expected-rows.json"
@@ -204,24 +238,6 @@ fi
 # of being followed — round 4's verify named the race as the class the planted symlink was an
 # instance of.
 : | python3 "$RPC" append --out "$STAGING" --create || exit 1
-cleanup() {
-    # NOT `exec 3>&- 2>/dev/null` — that form applies both redirections to the shell and
-    # is exactly what server_stop below documents as harmful. It survived here for a whole
-    # round because the fix was applied to the line a reviewer named.
-    exec 3>&-
-    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
-    rm -rf "$TMP"
-    # STAGING lives beside $OUT, not in $TMP, so an interrupted or failed run leaves the
-    # rows it did measure on disk under a name that says what they are. Round 2: staging
-    # inside $TMP meant the cleanup trap destroyed every measured row on interrupt, and
-    # the mv failure branch destroyed the very rows it had failed to publish.
-    if [ -s "$STAGING" ]; then
-        echo "  partial results kept at: $STAGING" >&2
-    else
-        rm -f "$STAGING" 2>/dev/null
-    fi
-}
-trap cleanup EXIT
 
 # ── JSON-RPC over stdio ───────────────────────────────────────────────────────────
 # THE NON-OBVIOUS PART: stdin must stay open until the reply arrives. The first probe
@@ -313,7 +329,7 @@ print(json.dumps({"jsonrpc":"2.0","id":int(sys.argv[1]),"method":"initialize","p
 # ── Run ───────────────────────────────────────────────────────────────────────────
 echo "eval → $OUT"
 echo "  binary: $BINARY"
-printf '%s\n' "$PING" | python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]", "\ufffd", sys.stdin.read()))' | sed 's/^/  /'
+printf '%s\n' "$PING" | scrub | sed 's/^/  /'
 
 for model in "${MODELS[@]}"; do
     echo
@@ -351,7 +367,7 @@ PYEOF
             # The ROW carries the id verbatim — scored rows and the owed pairs do, and an error row
             # with a sanitized id would never match its pair. Only the terminal line is sanitized.
             case_id_raw=$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"]))' "$case_file" "$idx")
-            case_id=$(printf '%s' "$case_id_raw" | scrub)
+            case_id=$(printf '%s' "$case_id_raw" | scrub_line)
             case_tool=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["tool"])' "$case_file" "$idx")
             printf '  %-28s ' "$case_id"
 

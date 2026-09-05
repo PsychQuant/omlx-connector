@@ -33,6 +33,7 @@
 # looks exactly like a clause with no coverage, and cost one wrong diagnosis already.
 set -u
 
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURES="$ROOT/scripts/tests/fixtures"
 PASS=0

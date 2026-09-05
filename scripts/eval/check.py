@@ -144,8 +144,13 @@ _PREAMBLE_PATTERNS = [
     # outline, translate, 摘要, 總結 are ordinary words that can appear in output, which
     # check.py's own rule above says a trigger must never be. What makes "I have summarized
     # the text below" a preamble is the hand-off: below / as follows / a colon / 如下. The
-    # declared cost, chosen on purpose: a preamble with no hand-off ("I have summarized the
-    # key points for you.") is treated as content. False positives are the damaging direction.
+    # declared cost, chosen on purpose, with its ACTUAL boundary: the hand-off must FOLLOW the
+    # output word within 40 characters. A preamble with no hand-off ("I have summarized the
+    # key points for you."), one whose hand-off LEADS ("Below, I have summarized the meeting."),
+    # a bare past tense ("I summarized the text.") and any opener outside the modal list all
+    # read as content here — round 7's verify caught 4 of 18 realistic openers. Recall is low by
+    # construction and declared at class level in README; false positives are the damaging
+    # direction, and the two windows have a fixture on each side of their boundary.
     r"i(?:'ve| have| will| ?'ll| am going to)[^.!?\n]{0,40}"
     r"(?:summari[sz]|rewr(?:ite|ote)|translat|outlin|paraphras)[^.!?\n]{0,40}"
     r"(?::|as follows|below)",
@@ -161,8 +166,17 @@ _PREAMBLE_PATTERNS = [
     # dropping them cost the one true positive 「我已經幫你整理好了。」, which is a preamble
     # while 「我會整理房間，然後出門。」 is not. The difference is 幫你: the model addressing
     # the requester about work done ON THEIR BEHALF. That, not the verb, is the meta signal.
+    # The Chinese pattern carries the SAME declared cost as the English one above, and round 7
+    # declared only the English: 「我已經整理好這段文字的摘要了。」 and 「我已經翻譯完成了。」
+    # — completion reports with no hand-off — read as content now, where before round 7 they
+    # were flagged. The trade is the same and made on purpose; it is written here so it is not
+    # rediscovered as a regression.
     r"我(?:已經|已经|會|会|來|来|將|将)[^。！？\n]{0,14}"
     r"(?:摘要|總結|总结|翻譯|翻译|改寫|改写)[^。！？\n]{0,10}(?:如下|[:：])",
+    # A LABEL IS A LEAD-IN. "Summary: …" and 「摘要：…」 preface the output with its name; the
+    # hand-off is the colon, and there is no first person to anchor on.
+    r"(?:summary|translation|rewrite|outline|paraphrase)[:：]",
+    r"(?:摘要|總結|总结|翻譯|翻译|譯文|译文|改寫|改写)[:：]",
     # …and 幫你 alone is not it either: 「我會幫你確認會議時間」 is an offer to do a task, which
     # is content. Round 4 flagged it. Round 5 narrowed to 幫你…完成 and STILL admitted the
     # future modals 會／將／來, so 「我會在明天幫你完成報告。」 — an offer, one verb over — was

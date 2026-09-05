@@ -21,7 +21,10 @@ test: test-swift test-shell
 test-swift:
 	swift test $(FALLBACK_FLAGS)
 
-test-shell:
+## test-shell depends on build EXPLICITLY. The shell suite needs .build/debug/OmlxConnectorMCP,
+## and until round 8 that binary existed only as a side effect of the `:=` FALLBACK_FLAGS line
+## above running `swift build` at parse time — a dependency nobody had written down.
+test-shell: build
 	@# NON-RECURSIVE on purpose: scripts/tests/headed/ holds suites that need a live
 	@# oMLX server and a PTY. Making this glob recursive would pull them into the
 	@# hermetic `make test`. See scripts/tests/headed/model-picker.test.sh (#17).

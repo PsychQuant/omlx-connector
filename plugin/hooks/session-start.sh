@@ -21,6 +21,7 @@ BINARY="$INSTALL_DIR/$BINARY_NAME"
 
 # Derive the plugin root from this script's own location rather than trusting
 # $CLAUDE_PLUGIN_ROOT to be exported into the hook's environment.
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGIN_JSON="$PLUGIN_ROOT/.claude-plugin/plugin.json"
 

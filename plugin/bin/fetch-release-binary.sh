@@ -28,6 +28,7 @@ BINARY="$INSTALL_DIR/$BINARY_NAME"
 VERSION_FILE="$INSTALL_DIR/.${BINARY_NAME}.version"
 # Developer ID Team Identifier for this project's releases.
 TEAM_ID="6W377FS7BS"
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Everything this script says goes to stderr. stdout belongs to the caller: the MCP

@@ -10,6 +10,7 @@ set -u
 
 # The implementation lives in the plugin, because the plugin is what runs on a
 # user's machine. scripts/ is repo-only and would not be there.
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
 VERIFY="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/plugin/bin/verify-download.sh"
 TEAM_ID="6W377FS7BS"
 PASS=0

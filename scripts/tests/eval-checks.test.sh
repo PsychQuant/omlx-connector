@@ -33,7 +33,14 @@
 # `# RED-first:` were each confirmed failing before the corresponding fix was written.
 set -u
 
+# ONE ENVIRONMENT VARIABLE COULD RELOCATE THE SUITE. `make` runs this file by a RELATIVE path,
+# so `cd` gets a relative operand and bash consults CDPATH for it: a decoy tree named in
+# CDPATH is entered first, `cd` prints the directory it chose, and every assertion below ran
+# against the decoy at 336/0 — measured by round 7's verify, from the environment alone.
+unset CDPATH
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+case "$REPO" in *"
+"*) echo "  FAIL — REPO resolved to a path containing a newline; refusing to run against it" >&2; exit 1 ;; esac
 CHECK="$REPO/scripts/eval/check.py"
 RPC="$REPO/scripts/eval/rpc.py"
 export RPC
@@ -42,26 +49,26 @@ export RPC
 # mode only the check-level cases run, and the trap prints how many failed instead of
 # judging the count.
 CANARY_MODE=""
-if [ -n "${EVAL_CHECKS_CANARY:-}" ]; then
-    # Only with the run's own token, and only if that token is written INSIDE the file the
-    # variable points at. Round 5's verify set EVAL_CHECKS_CANARY in the ambient environment,
-    # pointing at the real check.py: the suite ran 186 assertions, skipped its count, printed
-    # CANARY_FAILS=0 and exited 0 — the mechanism shipping its own bypass. The parent writes a
-    # per-run token into every mutant it builds; nothing else can produce a matching file.
-    # A PLAIN STRING COMPARED TO LINE 1 — not a grep pattern. Round 6 interpolated the token
-    # into a regex: a token carrying a newline was two patterns, `.*` matched every line of
-    # the real check.py, and the bypass this gate exists to close came back through it.
-    case "${EVAL_CHECKS_CANARY_TOKEN:-}" in
-        ''|*[![:alnum:]-]*)
-            echo "  FAIL — EVAL_CHECKS_CANARY_TOKEN is missing or is not a plain token; refusing canary mode" >&2
-            exit 1 ;;
-    esac
-    if [ "$(head -n 1 "$EVAL_CHECKS_CANARY" 2>/dev/null)" != "# canary-token: $EVAL_CHECKS_CANARY_TOKEN" ]; then
-        echo "  FAIL — EVAL_CHECKS_CANARY does not open with this run's token; refusing canary mode" >&2
-        exit 1
-    fi
-    CHECK="$EVAL_CHECKS_CANARY"
+# CANARY MODE IS ENTERED BY ARGUMENT, NEVER BY ENVIRONMENT. Rounds 5–7 gated it on variables
+# — first the path alone, then a token beside the path — and each round's verify entered it
+# from the ambient environment: round 5 with the path, round 7 with path AND token pointed at
+# a file whose first line it had written, `make test` green with 186 assertions failed and
+# build-release.sh's gate satisfied. A token that travels in the same channel as the path
+# authenticates nothing against whoever controls that channel. `make test` passes no
+# arguments, so `--canary` cannot arrive from the environment at all; the variables are
+# refused outright so that a stray one fails loudly instead of silencing the suite.
+if [ -n "${EVAL_CHECKS_CANARY:-}" ] || [ -n "${EVAL_CHECKS_CANARY_TOKEN:-}" ]; then
+    echo "  FAIL — EVAL_CHECKS_CANARY* is set: canary mode is entered by argument, never by environment; unset it" >&2
+    exit 1
+fi
+if [ "${1:-}" = "--canary" ]; then
+    # A regular file only: a FIFO would block head/python forever, a device is not a mutant.
+    [ -f "${2:-}" ] || { echo "  FAIL — --canary needs a regular file, got '${2:-}'" >&2; exit 1; }
+    CHECK="$2"
     CANARY_MODE=1
+elif [ $# -gt 0 ]; then
+    echo "usage: eval-checks.test.sh [--canary <mutated check.py>]" >&2
+    exit 64
 fi
 PASS=0
 FAIL=0
@@ -93,7 +100,7 @@ FAKE_PID=""
 # a message, not a pass with a footnote. Round 4 also found that the fake-oMLX block
 # contributed exactly one unit to the count whether it ran or skipped, so the only test able
 # to see the served-model call site could vanish silently.
-EXPECTED_CASES=336       # updated ON PURPOSE when a case is added or removed — see the tail
+EXPECTED_CASES=348       # updated ON PURPOSE when a case is added or removed — see the tail
 finish_suite() {
     local rc=0
     [ -n "$FAKE_PID" ] && kill "$FAKE_PID" 2>/dev/null
@@ -101,6 +108,7 @@ finish_suite() {
     if [ -n "$CANARY_MODE" ]; then
         echo "CANARY_FAILS=$FAIL"
         echo "CANARY_RAN=$((PASS + FAIL))"   # measurement only: the blind-spot numbers below come from here
+        echo "CANARY_REPO=$REPO"             # which tree the child actually tested — see the CDPATH probe
         exit 0
     fi
     echo
@@ -123,6 +131,10 @@ finish_suite() {
 trap finish_suite EXIT
 
 skip() { echo "  SKIP — $1"; SKIP=$((SKIP + 1)); }
+# CHARACTERS, NOT BYTES. bash's ${#var} counts bytes under LC_ALL=C, so a missing CJK marker
+# subtracted three from the accumulator on a C locale while python's len() said one. Every
+# count that can meet a CJK string goes through here.
+clen() { python3 -c 'import sys; print(len(sys.argv[1]))' "$1"; }
 
 # verdict <description> <expected: ok|not-ok> <check-name> <expect-json> <text>
 #
@@ -420,7 +432,9 @@ corpus ok "no pattern flags ordinary content (false-positive corpus)" \
     '我會把這份總結留到下週再看。' \
     '我來翻譯這段文字給你聽，順便說明背景。' \
     'I will outline my concerns in the next section.' \
-    'I have translated this passage before, for a different client.'
+    'I have translated this passage before, for a different client.' \
+    'I have summarized the notes of the meetings into a list below.' \
+    '我已經把摘要整理成十個要點放在這裡：期限延到四月五日。'
 
 corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
     'Here is a summary of the text: the deadline moved.' \
@@ -445,7 +459,11 @@ corpus not-ok "every known lead-in is still caught (true-positive corpus)" \
     '我已經把摘要整理好了：期限延到四月五日。' \
     '我已經幫你把報告寫好了。' \
     "I've summarized the key points:" \
-    "I've summarized the key points below."
+    "I've summarized the key points below." \
+    'Summary: the deadline moved.' \
+    '摘要：期限延到四月五日。' \
+    'I have summarized the notes of the meeting into a list below.' \
+    '我已經把摘要整理成十個要點放在這：期限延到四月五日。'
 
 # --- script_purity: both directions, so the set cannot be silently emptied ---------
 # RED-first: 紫 (紫色) and 凰 (鳳凰) are the SAME codepoint in both scripts; 划 (划船,
@@ -546,7 +564,7 @@ while [ $i -lt ${#probes} ]; do
     i=$((i + 1))
 done
 # One assertion per probe, for the same reason corpus() counts per fixture.
-nbad=${#bad}
+nbad=$(clen "$bad")
 PASS=$((PASS + ${#probes} - nbad)); FAIL=$((FAIL + nbad))
 if [ "$nbad" -eq 0 ]; then
     echo "  ok   — every per-line probe character is detected (${#probes} probes, one per line)"
@@ -623,9 +641,12 @@ if [ -z "$bad" ]; then
     PASS=$((PASS + NSENT))
 else
     echo "  FAIL — these members of _SIMPLIFIED_ONLY occur in ordinary Traditional text: $bad"
-    # Parenthesised: `+` binds tighter than `>` and `?:`, so without them this line ASSIGNED
-    # `NSENT - bad` to PASS and threw the whole accumulator away (round 6's verify).
-    FAIL=$((FAIL + ${#bad})); PASS=$((PASS + (NSENT > ${#bad} ? NSENT - ${#bad} : 0)))
+    # `bad` counts CHARACTERS found, the guard counts SENTENCES; capping the failures at NSENT
+    # keeps PASS + FAIL == NSENT, which the count and the canaries both depend on. (Round 6
+    # wrote this line without parentheses and ASSIGNED the accumulator; round 7's clamp fixed
+    # that and broke the invariant instead.)
+    nbadc=$(clen "$bad"); nfail=$((nbadc < NSENT ? nbadc : NSENT))
+    FAIL=$((FAIL + nfail)); PASS=$((PASS + NSENT - nfail))
 fi
 
 # The same direction for the preamble patterns: no pattern may match the clean corpus.
@@ -650,7 +671,8 @@ if [ -z "$badp" ]; then
 else
     nbadp=$(printf '%s' "$badp" | awk -F' [|] ' '{print NF}')
     echo "  FAIL — preamble patterns flag ordinary Traditional sentences: $badp"
-    FAIL=$((FAIL + nbadp)); PASS=$((PASS + (NSENT > nbadp ? NSENT - nbadp : 0)))
+    nfail=$((nbadp < NSENT ? nbadp : NSENT))
+    FAIL=$((FAIL + nfail)); PASS=$((PASS + NSENT - nfail))
 fi
 
 # PER-CHARACTER membership, not per-line. Round 3's probes are one per line, so deleting a
@@ -661,7 +683,7 @@ fi
 # "43 probes" for 42 — a count that no longer counted anything, in the guard whose whole
 # purpose is that removing one marker is one red.
 MUST_PROBES="么听圣坏复宁庄怀惊扑扰网胜赶适吨这说时实发关应结国学对会门长问风飞鱼鸟龙齐题预领"
-NMUST=$(python3 -c 'import sys; print(len(sys.argv[1]))' "$MUST_PROBES")
+NMUST=$(clen "$MUST_PROBES")
 missing=$(python3 - "$CHECK" "$MUST_PROBES" <<'INNER'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
@@ -674,11 +696,11 @@ if [ -z "$missing" ]; then
     PASS=$((PASS + NMUST))
 else
     echo "  FAIL — these Simplified markers were removed from the set: $missing"
-    FAIL=$((FAIL + ${#missing})); PASS=$((PASS + NMUST - ${#missing}))
+    nmiss=$(clen "$missing"); FAIL=$((FAIL + nmiss)); PASS=$((PASS + NMUST - nmiss))
 fi
 # ...and the four that must stay OUT, so round 1's false positives cannot return.
 BACK_PROBES="紫凰划据"
-NBACK=$(python3 -c 'import sys; print(len(sys.argv[1]))' "$BACK_PROBES")
+NBACK=$(clen "$BACK_PROBES")
 back=$(python3 - "$CHECK" "$BACK_PROBES" <<'INNER'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("chk", sys.argv[1])
@@ -691,7 +713,7 @@ if [ -z "$back" ]; then
     PASS=$((PASS + NBACK))
 else
     echo "  FAIL — these Traditional characters are back in the set: $back"
-    FAIL=$((FAIL + ${#back})); PASS=$((PASS + NBACK - ${#back}))
+    nback=$(clen "$back"); FAIL=$((FAIL + nback)); PASS=$((PASS + NBACK - nback))
 fi
 
 # --- category_member: brackets a CJK model actually uses --------------------------
@@ -724,7 +746,6 @@ verdict "label_is accepts the gold label"            ok     label_is '{"expected
 verdict "label_is refuses a different label"         not-ok label_is '{"expected":"bug"}' 'feature request'
 verdict "label_is is case- and punctuation-tolerant" ok     label_is '{"expected":"bug"}' '「Bug」'
 verdict "label_is refuses a sentence containing it"  not-ok label_is '{"expected":"bug"}' 'I would say this is a bug.'
-guard_late() { :; }
 
 # --- usage errors exit 64 in EVERY program, not just run.sh --------------------------
 # Round 3 found usage errors exiting 2 (the contract's "ran fine, findings"). Round 4 fixed
@@ -765,6 +786,21 @@ cp "$REPO/scripts/eval/cases/summarize.json" "$SUITE_TMP/copy-of-summarize.json"
 usage64 "run.sh: the same case id in two files is a usage error, decided before any server is contacted" \
     env OMLX_BASE_URL=http://127.0.0.1:1 "$REPO/scripts/eval/run.sh" --model a --out "$SUITE_TMP/dup.jsonl" \
     --cases "$REPO/scripts/eval/cases/summarize.json" --cases "$SUITE_TMP/copy-of-summarize.json"
+# ...and what the refusal PRINTS is operator-file content — sanitized like everything else
+# that reaches the terminal. Round 7's hoisted diagnostics printed the duplicated id raw.
+ESCID="$SUITE_TMP/escid.json"
+python3 -c 'import json,sys; c={"id":"a\x1b[2Kb","tool":"local_summarize","why":"e","text":"x","expect":{},"human_review":[]}; json.dump({"cases":[c,dict(c)]}, open(sys.argv[1],"w"))' "$ESCID"
+esc_out=$(env OMLX_BASE_URL=http://127.0.0.1:1 "$REPO/scripts/eval/run.sh" --model a --cases "$ESCID" --out "$SUITE_TMP/esc.jsonl" 2>&1); esc_rc=$?
+if [ "$esc_rc" != "64" ]; then
+    echo "  FAIL — a duplicated case id should be a usage error (exit $esc_rc, wanted 64)"
+    FAIL=$((FAIL + 1))
+elif printf '%s' "$esc_out" | grep -q "$(printf '\x1b')"; then
+    echo "  FAIL — the duplicate-id message printed an ESC from the case file to the terminal"
+    FAIL=$((FAIL + 1))
+else
+    echo "  ok   — the duplicate-id message sanitizes the id it quotes"
+    PASS=$((PASS + 1))
+fi
 # ...and the check must not fail OPEN. Round 6's dup-id parser was `dupid=$(python3 …)` with the
 # exit status discarded: a case without an `id` raised KeyError, the variable was empty, and
 # the run proceeded — to owe rows for pairs it could not name.
@@ -847,18 +883,21 @@ if [ -n "$CANARY_MODE" ]; then exit 0; fi
 #
 # The three constants are updated ON PURPOSE when fixtures change, like EXPECTED_CASES.
 #
-# WHAT THE CANARY DOES NOT SEE — measured in round 5, not estimated. A canary only sees an
+# WHAT THE CANARY DOES NOT SEE — families named in round 5, counts measured here. A canary only sees an
 # assertion whose verdict FLIPS under one of the three mutants of check.py. That leaves two
 # blind families:
 #   1. everything after the canary exit below never runs in canary mode at all — the
 #      rpc.py score / summarize / complete / append cases, run.sh end-to-end, the manifest,
-#      the served-model call site (73 of 336 assertions);
+#      the served-model call site (78 of 348 assertions);
 #   2. assertions that check an EXIT CODE or a table's MEMBERSHIP rather than a verdict —
 #      usage64(), guard(), the probe-coverage and add-direction checks — run in canary mode
-#      but pass under every mutant (89 of 336).
+#      but pass under every mutant (90 of 348).
 #   The numbers are measured at the same time as EXPECTED_CASES and go stale the moment it
-#   moves: round 6 declared round 5's (62 + 23 of 248) beside a count of 326. Re-measure
-#   both — CANARY_RAN is printed by the child for exactly this — when the count changes.
+#   moves: round 6 declared round 5's (62 + 23 of 248) beside a count of 326, and round 7
+#   re-measured them here and left the README's copy of the canary constants stale. This
+#   file is the ONLY place any of these numbers is written. To re-measure:
+#       bash scripts/tests/eval-checks.test.sh --canary scripts/eval/check.py | grep CANARY_RAN
+#   never-run = EXPECTED_CASES − CANARY_RAN; cannot-flip = CANARY_RAN − ALWAYS_OK − ALWAYS_NOTOK.
 # Neutering any one of those helpers — `if …; then` → `if true; then` — is a single-line
 # edit that touches no fixture and no constant and leaves count and canaries unchanged. So
 # is neutering canary()'s own comparison. Round 5's verify did all of these and showed a
@@ -866,14 +905,13 @@ if [ -n "$CANARY_MODE" ]; then exit 0; fi
 # next layer would be a second mutant family for rpc.py and a guard for canary(), and the
 # layer after that is the same question again. A suite cannot be immune to someone with
 # write access to it; this file stops at saying precisely where that immunity ends.
-CANARY_ALWAYS_OK=95
-CANARY_ALWAYS_NOTOK=79
+CANARY_ALWAYS_OK=99
+CANARY_ALWAYS_NOTOK=81
 CANARY_OFF_BY_ONE=8
 
 canary() {  # canary <label> <mutant-path> <expected fails>
     local label="$1" mutant="$2" want="$3" got
-    got=$(EVAL_CHECKS_CANARY="$mutant" EVAL_CHECKS_CANARY_TOKEN="$CANARY_TOKEN" \
-          bash "${BASH_SOURCE[0]}" 2>/dev/null | sed -n 's/^CANARY_FAILS=//p' | tail -1)
+    got=$(bash "${BASH_SOURCE[0]}" --canary "$mutant" 2>/dev/null | sed -n 's/^CANARY_FAILS=//p' | tail -1)
     if [ "${got:-x}" = "$want" ]; then
         echo "  ok   — canary: against $label, exactly $want assertion(s) fail"
         PASS=$((PASS + 1))
@@ -886,13 +924,10 @@ canary() {  # canary <label> <mutant-path> <expected fails>
     fi
 }
 MUT="$SUITE_TMP/mutants"; mkdir -p "$MUT"
-CANARY_TOKEN="$$-$RANDOM-$RANDOM-$(date +%s)"
-python3 - "$CHECK" "$MUT" "$CANARY_TOKEN" <<'INNER' || { echo "  FAIL — the canary mutant builder failed; no canary ran"; FAIL=$((FAIL + 1)); exit 1; }
+python3 - "$CHECK" "$MUT" <<'INNER' || { echo "  FAIL — the canary mutant builder failed; no canary ran"; FAIL=$((FAIL + 1)); exit 1; }
 import pathlib, sys
 src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
 out = pathlib.Path(sys.argv[2])
-# The token line is the FIRST line of every mutant; the child refuses canary mode without it.
-src = "# canary-token: %s\n" % sys.argv[3] + src
 wrap = """
 
 # -- canary mutant: every check returns ok=%s --
@@ -913,29 +948,53 @@ INNER
 # THE MECHANISM MUST NOT SHIP ITS OWN BYPASS. Round 5's verify set EVAL_CHECKS_CANARY in the
 # ambient environment, pointing at the real check.py: the suite ran 186 of its assertions,
 # printed CANARY_FAILS=0, and exited 0 — the count never evaluated, `make test` green, and
-# build-release.sh's new gate satisfied. Canary mode is now entered only with a per-run token
-# that the parent writes INTO the mutant file; a stray variable fails loudly instead.
+# build-release.sh's new gate satisfied. A stray variable — either of them — fails loudly.
 bypass_rc=$(EVAL_CHECKS_CANARY="$CHECK" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; echo $?)
 if [ "$bypass_rc" != "0" ]; then
-    echo "  ok   — an ambient EVAL_CHECKS_CANARY without the run's token is refused (exit $bypass_rc)"
+    echo "  ok   — an ambient EVAL_CHECKS_CANARY alone is refused (exit $bypass_rc)"
     PASS=$((PASS + 1))
 else
     echo "  FAIL — an ambient EVAL_CHECKS_CANARY switched the suite into canary mode and it exited 0"
     FAIL=$((FAIL + 1))
 fi
-
-# A TOKEN IS NOT A PATTERN. Round 6's gate interpolated the token into a grep regex, so a
-# token carrying a newline became TWO patterns, and a second pattern of `.*` matched every
-# line of the real check.py: canary mode re-entered against the unmutated file and the
-# suite exited 0 — round 5's bypass, back through the fix. The gate now compares line 1 of
-# the file to the token as a plain string, and a token containing a newline is refused.
-inj_rc=$(EVAL_CHECKS_CANARY="$CHECK" EVAL_CHECKS_CANARY_TOKEN="x
-.*" bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; echo $?)
-if [ "$inj_rc" != "0" ]; then
-    echo "  ok   — a token carrying a newline (a second grep pattern) is refused (exit $inj_rc)"
+# …and the argument form takes a regular file only (a FIFO would hang the child forever).
+# Not RED-first: before this round the suite had no argument handling, so a `--canary` given
+# to the old code was ignored and the child ran the FULL suite — recursively.
+dir_rc=$(bash "${BASH_SOURCE[0]}" --canary "$SUITE_TMP" >/dev/null 2>&1; echo $?)
+if [ "$dir_rc" = "1" ]; then
+    echo "  ok   — --canary refuses anything that is not a regular file (exit 1)"
     PASS=$((PASS + 1))
 else
-    echo "  FAIL — a newline in EVAL_CHECKS_CANARY_TOKEN turned the gate into two grep patterns and the suite exited 0"
+    echo "  FAIL — --canary accepted a directory (exit $dir_rc)"
+    FAIL=$((FAIL + 1))
+fi
+# CDPATH cannot relocate the child: it is unset before REPO is derived. The child is started
+# by a RELATIVE path from the repo root, the way `make` starts this file, with a decoy tree
+# in CDPATH that contains the directory the relative operand names. Not RED-first for the
+# same reason as the row above — the old file had no --canary and would have recursed.
+mkdir -p "$SUITE_TMP/decoy/scripts/tests"
+seen=$(cd "$REPO" && CDPATH="$SUITE_TMP/decoy" bash scripts/tests/eval-checks.test.sh --canary "$MUT/always_ok.py" 2>/dev/null | sed -n 's/^CANARY_REPO=//p' | tail -1)
+if [ "$seen" = "$REPO" ]; then
+    echo "  ok   — a decoy tree in CDPATH does not relocate the suite"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — with CDPATH set the child tested '${seen:-(nothing)}' instead of $REPO"
+    FAIL=$((FAIL + 1))
+fi
+
+# THE ENVIRONMENT CANNOT ENTER CANARY MODE — with one variable or with two. Round 5 entered
+# it with the path alone. Round 7 added a token; round 7's verify set path AND token, both from
+# the same environment, pointed them at a file whose first line it had written, and `make test`
+# was green with 186 assertions failed — the count never evaluated, build-release.sh satisfied.
+# A token that travels in the same channel as the path authenticates nothing against whoever
+# controls that channel. Canary mode is an ARGUMENT now, and the variables are refused.
+ENVM="$SUITE_TMP/env-mutant.py"; { echo "# canary-token: pwn"; cat "$CHECK"; } > "$ENVM"
+pair_rc=$(EVAL_CHECKS_CANARY="$ENVM" EVAL_CHECKS_CANARY_TOKEN=pwn bash "${BASH_SOURCE[0]}" >/dev/null 2>&1; echo $?)
+if [ "$pair_rc" != "0" ]; then
+    echo "  ok   — EVAL_CHECKS_CANARY + EVAL_CHECKS_CANARY_TOKEN together are refused (exit $pair_rc), not obeyed"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL — the environment pair entered canary mode against an attacker-named file and the suite exited 0"
     FAIL=$((FAIL + 1))
 fi
 
@@ -1453,6 +1512,57 @@ else
         FAIL=$((FAIL + 1))
     else
         echo "  ok   — the server's own stderr is filtered before 'server exited:' prints it"
+        PASS=$((PASS + 1))
+    fi
+    # A CASE ID IS PRINTED ON ONE LINE. Round 7 replaced the inline filter on the per-case id
+    # with scrub(), which keeps LF because the --ping banner is multi-line — and so reopened
+    # the newline forgery the inline filter had closed: an id carrying "\n  FORGED ok …"
+    # printed a second, forged verdict row in the operator's output.
+    LFID="$SUITE_TMP/lfid.json"
+    python3 -c 'import json,sys; json.dump({"cases":[{"id":"a\n  FORGED ok   0.0s all-clean","tool":"local_summarize","why":"lf","text":"x","expect":{"non_empty":{}},"human_review":[]}]}, open(sys.argv[1],"w"))' "$LFID"
+    LF_OUT=$(OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+             "$RUNSH" --model stub --out "$SUITE_TMP/lfid-$RANDOM.jsonl" --cases "$LFID" 2>&1)
+    if printf '%s\n' "$LF_OUT" | grep -q '^  FORGED'; then
+        echo "  FAIL — a newline in a case id forged a second per-case verdict line"
+        FAIL=$((FAIL + 1))
+    elif ! printf '%s' "$LF_OUT" | grep -q 'FORGED'; then
+        echo "  FAIL — the case with the LF id was never printed, so the forgery was not tested"
+        FAIL=$((FAIL + 1))
+    else
+        echo "  ok   — a newline in a case id stays on the id's own status line"
+        PASS=$((PASS + 1))
+    fi
+    # THE SUCCESS BANNER. Round 7 routed the preflight-FAILURE banner through scrub() and left
+    # the banner every successful run prints on an inline copy of the old regex, one class
+    # short (no U+2028/U+2029).
+    PING_OUT=$(OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 \
+               STUB_PING="$(python3 -c 'print("stub-mcp: reachable\nloaded: m\u2028forged", end="")')" \
+               "$RUNSH" --model stub --out "$SUITE_TMP/ping-$RANDOM.jsonl" \
+               --cases "$REPO/scripts/eval/cases/summarize.json" 2>&1)
+    if ! printf '%s' "$PING_OUT" | grep -q 'loaded:'; then
+        echo "  FAIL — the success-path banner was not printed, so its filter was not tested"
+        FAIL=$((FAIL + 1))
+    elif printf '%s' "$PING_OUT" | grep -q "$(printf '\xe2\x80\xa8')"; then
+        echo "  FAIL — U+2028 from the server's --ping output reached the terminal on the success path"
+        FAIL=$((FAIL + 1))
+    else
+        echo "  ok   — the success-path --ping banner goes through the same filter as the failure path"
+        PASS=$((PASS + 1))
+    fi
+    # NO SCRATCH DIRECTORY SURVIVES A REFUSAL. Six exits sat between `mktemp -d` and
+    # `trap cleanup EXIT` — one of them added by round 7 — and each left an omlx-eval.* directory
+    # behind; the suite itself exercises two of those exits on every run.
+    mkdir -p "$SUITE_TMP/leak" "$SUITE_TMP/dirout.jsonl.partial"
+    OMLX_EVAL_BINARY="$STUB" STUB_MODE=silent STUB_ANSWER_CALLS=99 OMLX_EVAL_TIMEOUT=3 TMPDIR="$SUITE_TMP/leak" \
+        "$RUNSH" --model stub --out "$SUITE_TMP/dirout.jsonl" --cases "$REPO/scripts/eval/cases/summarize.json" >/dev/null 2>&1; leak_rc=$?
+    if [ "$leak_rc" != "1" ]; then
+        echo "  FAIL — a directory at <out>.partial should be refused with exit 1 (got $leak_rc)"
+        FAIL=$((FAIL + 1))
+    elif [ -n "$(ls -A "$SUITE_TMP/leak")" ]; then
+        echo "  FAIL — the refusal leaked a scratch directory: $(ls -A "$SUITE_TMP/leak" | head -1)"
+        FAIL=$((FAIL + 1))
+    else
+        echo "  ok   — a refusal before the run leaves no scratch directory behind"
         PASS=$((PASS + 1))
     fi
     # A1: the TOOL-error branch — round 1's entire subject — was unreachable in this suite

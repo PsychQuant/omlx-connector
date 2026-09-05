@@ -472,7 +472,9 @@ per-run token the mutant must carry; per-fixture counting for the add-direction 
 wrote the blind spot into the suite and the README **with the families named**, and did not
 build the next layer. The reason is not fatigue. A second mutant family for `rpc.py` would
 need a guard, that guard would need a guard, and the Devil's Advocate has found the next
-square in every round so far. The honest statement is the one the suite now carries: here is
+square in every round it ran in — it did not run in round 6, which the round-7 commit message
+says and this sentence, in the same commit, contradicted. The honest statement is the one the
+suite now carries: here is
 exactly where the self-verification ends, and past it the property is "someone with write
 access to the test file can weaken it", which no test file can hold about itself.
 
@@ -488,6 +490,24 @@ walked the JSONL two different ways and a reply carrying U+2028 got the previous
 of adding to it. None of that is a new class. It is the same one, and the reason to record it
 is the one this file keeps arriving at: the sentence that says a thing is closed is where the
 next defect is found.
+
+Round 7's verify then found three things inside round 7's own commit: a canary constant
+re-measured in the suite and left stale in the README, twelve lines from arithmetic that used
+the new value; a shared filter that keeps LF for the multi-line banner applied to a
+single-line status row, reopening a forgery the inline filter it replaced had closed; and a
+token gate whose token travels in the same channel as the path it authenticates, so two
+variables did what round 5 did with one. The Devil's Advocate — running for the first time
+since round 5 — then re-measured the round-7 declaration and found it **correct** (73 / 89 of
+336, the failure sets disjoint), and re-classified the round: none of its findings was "a
+sentence that says a thing is closed"; every one was **a number or a promise written down a
+second time, diverging from the first** — README vs suite constants, README's hollowing
+promise vs the suite's own `HONEST LIMIT` comment, CLAUDE.md's "every round" vs the commit
+message that said the DA had not run. That class is narrower, falsifiable, and this repo
+already closes it mechanically for `Version.swift`. The sentence above about "the sentence
+that says a thing is closed" is withdrawn as unfalsifiable: any prose error would have
+counted, and a reviewer is assigned to find one each round. What round 8 does instead is
+remove the copies: canary mode is an argument, the README carries no number the suite
+measures, and where a count has to be stated it is stated once, beside what it counts.
 
 **The sweep is still not part of `make test`** — it takes ~30 suite runs — so the claim remains
 about a point in time. When you change a check or a table, re-run it, and expect the class you
