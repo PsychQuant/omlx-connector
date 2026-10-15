@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:omlx-connector}",
+            "name": "Debug OmlxConnectorMCP",
+            "target": "OmlxConnectorMCP",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug OmlxConnectorMCP"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:omlx-connector}",
+            "name": "Release OmlxConnectorMCP",
+            "target": "OmlxConnectorMCP",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release OmlxConnectorMCP"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:omlx-connector}",
+            "name": "Debug omlx-claude",
+            "target": "omlx-claude",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug omlx-claude"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:omlx-connector}",
+            "name": "Release omlx-claude",
+            "target": "omlx-claude",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release omlx-claude"
+        }
+    ]
+}

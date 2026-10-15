@@ -1,0 +1,457 @@
+#!/bin/bash
+# Delegation-quality evaluation harness (issue #1).
+#
+# WHAT THIS IS: the tests in Tests/ answer "does the code behave as designed" and answer
+# it well. They say nothing about whether the delegated work is any GOOD. This drives the
+# shipped binary against a live oMLX server over stdio JSON-RPC and records what came back.
+#
+# WHY IT IS NOT IN `make test`: it needs a model loaded, takes seconds to minutes per
+# case, and cannot run in CI. It also lives OUTSIDE both existing globs —
+# scripts/tests/*.test.sh and scripts/tests/headed/*.test.sh — so it cannot join either by
+# accident. Separation by file layout, not by a flag anyone has to remember (#17's lesson).
+#
+# WHAT IT DOES NOT CLAIM: nothing here scores coverage or faithfulness, and a green
+# mechanical row is not a statement that the model was good. See README.md.
+set -u
+
+# Writing to a FIFO whose reader has exited raises SIGPIPE, whose default action is to
+# kill the shell outright. That skipped the entire summary — including both guards — and
+# left the EXIT trap unrun, so a run that died mid-way looked like a run that produced a
+# short file. Ignoring it turns the write into an ordinary failure we can handle.
+trap '' PIPE
+
+unset CDPATH   # a relative `cd` operand consults CDPATH; a decoy tree there would relocate this script
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BINARY="${OMLX_EVAL_BINARY:-$REPO/.build/debug/OmlxConnectorMCP}"
+CASE_DIR="$REPO/scripts/eval/cases"
+CHECK="$REPO/scripts/eval/check.py"
+RPC="$REPO/scripts/eval/rpc.py"
+OUT="${OMLX_EVAL_OUT:-$REPO/scripts/eval/results.jsonl}"
+TIMEOUT="${OMLX_EVAL_TIMEOUT:-600}"   # a cold model load is minutes, not seconds
+MODELS=()
+CASE_FILES=()
+
+# `$(( … + TIMEOUT ))` evaluates the CONTENTS of a variable named inside it, so an
+# unvalidated OMLX_EVAL_TIMEOUT from the environment reached an arithmetic context and
+# could execute arbitrary commands. Demonstrated on macOS /bin/bash 3.2 in the round-1
+# verify. Validate before it goes anywhere near `$(( ))`.
+case "$TIMEOUT" in
+    ''|*[!0-9]*) echo "OMLX_EVAL_TIMEOUT must be a whole number of seconds, got: $TIMEOUT" >&2; exit 64 ;;
+esac
+[ "$TIMEOUT" -gt 0 ] || { echo "OMLX_EVAL_TIMEOUT must be positive" >&2; exit 64; }
+
+# TEXT WE DID NOT AUTHOR, BOUND FOR THE TERMINAL, goes through one of these two — by codepoint,
+# not `tr`, which works on bytes and would corrupt a UTF-8 id. scrub() is for MULTI-LINE text
+# and keeps LF: the --ping banner (both the success and the failure branch) and the server's
+# own stderr quoted in "server exited:". scrub_line() is for text that must stay on ONE line
+# and strips LF and CR too: the per-case id in the status row, and every argument or case-file
+# value a usage message quotes. Round 7 used scrub() on the case id and reopened the newline
+# forgery that the inline filter it replaced had closed — a second, forged verdict row. The
+# served model id is not filtered here: it reaches the terminal only through rpc.py's safe().
+scrub()      { python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x09\x0b-\x1f\x7f-\x9f\u2028\u2029]", "\ufffd", sys.stdin.read()))'; }
+scrub_line() { python3 -c 'import re,sys; sys.stdout.write(re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", "\ufffd", sys.stdin.read()))'; }
+
+# A missing option value used to die with bash's raw "$2: unbound variable" under set -u,
+# while every other argument error here gets a named message.
+need() { [ $# -ge 2 ] && [ -n "$2" ] || { echo "$1 needs a value" >&2; exit 64; }; }
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --model)  need "$@"; MODELS+=("$2"); shift 2 ;;
+        --cases)  need "$@"; CASE_FILES+=("$2"); shift 2 ;;
+        --out)    need "$@"; OUT="$2"; shift 2 ;;
+        --help|-h)
+            # Renders the comment header only. The old form hard-coded a line range that
+            # had drifted past the header and printed four lines of source code, plus a
+            # test count ("the 18 tests in Tests/") that was never true.
+            sed -n '3,${/^#/!q;p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            echo
+            echo "usage: run.sh [--model ID]... [--cases FILE]... [--out PATH]"
+            echo "  --model may repeat; omit it to let oMLX serve whatever it has loaded."
+            echo "  env: OMLX_BASE_URL (the server; same variable the MCP binary reads),"
+            echo "       OMLX_EVAL_BINARY, OMLX_EVAL_TIMEOUT, OMLX_EVAL_OUT"
+            exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 64 ;;
+    esac
+done
+
+[ ${#CASE_FILES[@]} -gt 0 ] || CASE_FILES=("$CASE_DIR"/*.json)
+[ ${#MODELS[@]} -gt 0 ] || MODELS=("")   # "" = no model override; the server decides
+
+# python3 is needed by the first check below, not only by the run. Round 7's hoist left this
+# line under "Preconditions", after five python3 calls — unreachable for the reason it exists,
+# and the realpath dedup above it failed open without python3 (empty output reads as "no dup").
+command -v python3 >/dev/null 2>&1 || { echo "python3 is required" >&2; exit 1; }
+
+# The same model or case file twice is a usage error, not a doubled run. Round 4 found
+# `--model stub --model stub` producing ten rows at exit 0: the accounting was consistent
+# with itself because the preflight and the run read the same duplicated array.
+dup=$(printf '%s\n' "${MODELS[@]}" | sort | uniq -d | head -1)
+[ -z "$dup" ] || { echo "--model '$(printf '%s' "$dup" | scrub_line)' given more than once" >&2; exit 64; }
+dup=$(for f in "${CASE_FILES[@]}"; do python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$f"; done | sort | uniq -d | head -1)
+[ -z "$dup" ] || { echo "--cases '$(printf '%s' "$dup" | scrub_line)' given more than once" >&2; exit 64; }
+
+# ARGUMENTS ARE JUDGED BEFORE ANY SERVER IS CONTACTED. Round 6 put the case-id check after
+# the --ping preflight: with no oMLX the preflight exited 1 before a usage error could, so the
+# hermetic suite needed a live server to see its 64, and with one up the same test ran a real
+# request for a model named "a" and left .partial files in the repo. Everything here reads
+# only the arguments and the case files.
+#
+# HOW MANY ROWS THIS RUN OWES. Everything below depends on knowing this number, and not
+# knowing it is the root of every fail-open variant three verify rounds found: a tool error
+# that produced a row the guard misread, a transport failure that produced no row, a model
+# whose handshake failed, a case file that could not be parsed. Each was fixed as its own
+# branch and the next one appeared one layer out. README already named the root — "nothing
+# in it says how many rows it should have" — so the fix is to count.
+#
+# Case files are parsed HERE, before anything runs, so an unreadable or empty one aborts
+# instead of quietly shrinking the run. With the default `cases/*.json`, a malformed
+# classify.json used to drop exactly the two requirements it exists to cover, and publish.
+TOTAL_CASES=0
+for case_file in "${CASE_FILES[@]}"; do
+    if [ ! -f "$case_file" ]; then
+        echo "no such case file: $case_file" >&2; exit 1
+    fi
+    if ! n=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file" 2>&1); then
+        echo "unreadable case file $case_file: $(printf '%s' "$n" | scrub_line)" >&2; exit 1
+    fi
+    # Validated BEFORE it reaches `$(( ))` — the round-1 class, held as a property this time.
+    # `2>&1` above means a python that exits 0 while writing to stderr would put text here.
+    case "$n" in ''|*[!0-9]*) echo "unreadable case file $case_file: $(printf '%s' "$n" | scrub_line)" >&2; exit 1 ;; esac
+    if [ "$n" -eq 0 ]; then
+        echo "case file has no cases: $case_file" >&2; exit 1
+    fi
+    TOTAL_CASES=$((TOTAL_CASES + n))
+done
+EXPECTED_ROWS=$((TOTAL_CASES * ${#MODELS[@]}))
+
+# THE SAME CASE TWICE, by id, across every file — the property; realpath was one spelling of
+# it, and a byte-identical copy or a hard link walked past it with self-consistent books.
+if ! dupid=$(python3 - "${CASE_FILES[@]}" 2>&1 <<'PYEOF'
+import collections, json, sys
+seen = collections.Counter()
+for path in sys.argv[1:]:
+    for c in json.load(open(path, encoding="utf-8"))["cases"]:
+        if "id" not in c:
+            raise SystemExit(f"{path}: a case has no id")
+        seen[c["id"]] += 1
+print(",".join(k for k, v in seen.items() if v > 1))
+PYEOF
+); then
+    # NOT `dupid=$(…)` with the status dropped. Round 6 did that: a case without an id raised
+    # KeyError, the variable came back empty, and the check passed — fail-open, in the check
+    # written against fail-open.
+    echo "unreadable case file: $(printf '%s' "$dupid" | scrub_line)" >&2; exit 1
+fi
+[ -z "$dupid" ] || { echo "case id(s) given more than once across --cases files: $(printf '%s' "$dupid" | scrub_line)" >&2; exit 64; }
+
+# ── Preconditions ─────────────────────────────────────────────────────────────────
+[ -x "$BINARY" ] || {
+    echo "not built: $BINARY" >&2
+    echo "  run: swift build   (or set OMLX_EVAL_BINARY)" >&2
+    exit 1
+}
+
+# THE PREFLIGHT IS THE BINARY'S OWN. The first version curled `$OMLX_URL` — which is the
+# *usage-1* variable read by omlx-claude, while the binary this harness drives reads
+# `OMLX_BASE_URL` (OmlxClient.swift:19). So the go/no-go check verified an address the run
+# never used: a live server on one port and a dead one on the other produced a green
+# preflight and five tool errors. That is the same shape as the managed-settings defect
+# CLAUDE.md describes ("the loopback gate will have verified an address the session does
+# not use"), reproduced in a new file.
+#
+# `--ping` cannot drift from what the run uses, because it IS the run's client: same
+# variable, same OmlxConfig.resolveBaseURL, and therefore same LoopbackPolicy. That last
+# part also settles the other half — CLAUDE.md forbids "a third path that resolves an
+# address without consulting the policy", and a bash reimplementation here would have been
+# a fourth.
+if ! PING=$("$BINARY" --ping 2>&1); then
+    echo "oMLX preflight failed — nothing to evaluate" >&2
+    printf '%s\n' "$PING" | scrub | sed 's/^/  /' >&2
+    echo "  start oMLX, or set OMLX_BASE_URL to where it listens" >&2
+    exit 1
+fi
+
+
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/omlx-eval.XXXXXX")
+SERVER_PID=""
+STAGING=""
+# THE TRAP IS INSTALLED ON THE LINE AFTER mktemp. It used to be installed sixty lines later,
+# after the staging checks, so every refusal between — symlink, directory, hard link, a failed
+# mv-aside, a failed --create, the owed-pairs writer round 7 added — left an omlx-eval.*
+# directory behind; the suite exercised two of those refusals on every run.
+cleanup() {
+    # NOT `exec 3>&- 2>/dev/null` — that form applies both redirections to the shell and
+    # is exactly what server_stop below documents as harmful. It survived here for a whole
+    # round because the fix was applied to the line a reviewer named.
+    exec 3>&-
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
+    rm -rf "$TMP"
+    [ -n "$STAGING" ] || return 0
+    # STAGING lives beside $OUT, not in $TMP, so an interrupted or failed run leaves the
+    # rows it did measure on disk under a name that says what they are. Round 2: staging
+    # inside $TMP meant the cleanup trap destroyed every measured row on interrupt, and
+    # the mv failure branch destroyed the very rows it had failed to publish.
+    if [ -s "$STAGING" ]; then
+        echo "  partial results kept at: $STAGING" >&2
+    else
+        rm -f "$STAGING" 2>/dev/null
+    fi
+}
+trap cleanup EXIT
+# The (model, case) pairs this run owes. Both the publish gate and the verdict compare the
+# rows against this multiset — identity, not a number.
+EXPECT_ROWS="$TMP/expected-rows.json"
+python3 - "$EXPECT_ROWS" "${MODELS[@]}" -- "${CASE_FILES[@]}" <<'PYEOF' || { echo "could not record the (model, case) pairs this run owes" >&2; exit 1; }
+import json, sys
+out = sys.argv[1]; rest = sys.argv[2:]; sep = rest.index("--")
+models, files = rest[:sep], rest[sep + 1:]
+ids = [c["id"] for path in files for c in json.load(open(path, encoding="utf-8"))["cases"]]
+json.dump([[m, i] for m in models for i in ids], open(out, "w"))
+PYEOF
+STAGING="${OUT}.partial"
+# The staging path is derived from an operator-supplied `--out`, so it is fully predictable
+# — and `: >` follows symlinks. Reproduced in round 3: a symlink planted at
+# `<out>.partial` had its target truncated and then filled with eval rows, before the first
+# row was written. Refuse anything that is not a regular file we are creating.
+if [ -L "$STAGING" ]; then
+    echo "refusing to write $STAGING — it is a symlink" >&2; exit 1
+fi
+if [ -e "$STAGING" ] && [ ! -f "$STAGING" ]; then
+    echo "refusing to write $STAGING — it exists and is not a regular file" >&2; exit 1
+fi
+# `|| echo 2`, not 1: a stat that fails is not evidence of a single link, and the appender's
+# own fstat check behind this is the defence — this pre-check must not be the one that opens.
+if [ -e "$STAGING" ] && [ "$(stat -f %l "$STAGING" 2>/dev/null || echo 2)" -gt 1 ]; then
+    echo "refusing to write $STAGING — it is hard-linked elsewhere" >&2; exit 1
+fi
+# A previous run's partial results are evidence someone may be mid-investigation. Round 3
+# truncated them silently; round 4 refused to run while they existed, which made the harness
+# single-shot after any imperfect run — the common case with small models, and the case this
+# harness exists to study. Keep them under a timestamped name and proceed.
+if [ -s "$STAGING" ]; then
+    KEPT="$STAGING.$(date +%Y%m%dT%H%M%S).$$"
+    mv "$STAGING" "$KEPT" || { echo "could not move aside $STAGING" >&2; exit 1; }
+    echo "  previous partial results kept at: $KEPT" >&2
+fi
+# The checks above are check-then-write; the WRITE is the defence. rpc.py append opens with
+# O_NOFOLLOW, so a symlink that appears between the check and the open fails the open instead
+# of being followed — round 4's verify named the race as the class the planted symlink was an
+# instance of.
+: | python3 "$RPC" append --out "$STAGING" --create || exit 1
+
+# ── JSON-RPC over stdio ───────────────────────────────────────────────────────────
+# THE NON-OBVIOUS PART: stdin must stay open until the reply arrives. The first probe
+# written for this closed it right after writing the request; the server exited without
+# answering, which looks exactly like a broken server rather than a closed pipe.
+#
+# `exec 3>"$FIFO"` holds it open — the fd outlives each write. macOS ships bash 3.2, which
+# has no `coproc`, and an explicit fd on a FIFO states the mechanism more plainly anyway.
+RPC_ID=0
+LINES_READ=0
+RESPONSE=""
+
+server_start() {
+    local fifo="$TMP/stdin"
+    rm -f "$fifo" "$TMP/stdout" "$TMP/stderr"
+    mkfifo "$fifo"
+    : > "$TMP/stdout"
+    "$BINARY" < "$fifo" > "$TMP/stdout" 2> "$TMP/stderr" &
+    SERVER_PID=$!
+    exec 3> "$fifo"
+    LINES_READ=0
+}
+
+server_stop() {
+    # `exec 3>&- 2>/dev/null` applies BOTH redirections to the current shell, permanently:
+    # the first model's iteration silently closed run.sh's stderr for the rest of the run,
+    # discarding every diagnostic after it. Close fd 3 and nothing else.
+    exec 3>&-
+    if [ -n "$SERVER_PID" ]; then
+        # Do NOT wait unboundedly. A server that has stopped reading stdin — hung, wedged
+        # mid-request, or asleep — never sees the EOF from closing fd 3, and `wait` then
+        # blocks forever. Found by the stub-binary test in the hermetic suite, which hung
+        # the whole of `make test` until this kill was added: the failure mode is a harness
+        # that never returns, which is worse than one that reports wrongly.
+        kill "$SERVER_PID" 2>/dev/null
+        wait "$SERVER_PID" 2>/dev/null
+        SERVER_PID=""
+    fi
+}
+
+server_alive() { [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; }
+
+rpc_send() {
+    # Check before writing, not after. rpc_await's dead-server check came too late: the
+    # next write to the orphaned FIFO happened first.
+    server_alive || { echo "server is gone; not sending" >&2; return 1; }
+    printf '%s\n' "$1" >&3 || { echo "write to server failed" >&2; return 1; }
+}
+
+# Sets $RESPONSE. Deliberately NOT called through $( ) — command substitution runs in a
+# subshell, so LINES_READ's increments never reached the parent and every await re-read
+# the whole file from line 1. The cursor is documented as cross-call state; now it is.
+rpc_await() {
+    local want="$1" deadline=$(( $(date +%s) + TIMEOUT )) total line hit
+    RESPONSE=""
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        total=$(wc -l < "$TMP/stdout" | tr -d ' ')
+        while [ "$LINES_READ" -lt "$total" ]; do
+            LINES_READ=$((LINES_READ + 1))
+            line=$(sed -n "${LINES_READ}p" "$TMP/stdout")
+            hit=$(printf '%s' "$line" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if d.get("id") == int(sys.argv[1]) else 1)
+' "$want" 2>/dev/null && printf '%s' "$line")
+            [ -n "$hit" ] && { RESPONSE="$hit"; return 0; }
+        done
+        server_alive || { echo "server exited: $(tail -3 "$TMP/stderr" | scrub)" >&2; return 1; }
+        sleep 0.2
+    done
+    echo "timed out after ${TIMEOUT}s waiting for response id=$want" >&2
+    return 1
+}
+
+handshake() {
+    RPC_ID=$((RPC_ID + 1))
+    rpc_send "$(python3 -c '
+import json,sys
+print(json.dumps({"jsonrpc":"2.0","id":int(sys.argv[1]),"method":"initialize","params":{
+  "protocolVersion":"2024-11-05","capabilities":{},
+  "clientInfo":{"name":"omlx-eval","version":"1"}}}))' "$RPC_ID")" || return 1
+    rpc_await "$RPC_ID" || return 1
+    rpc_send '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+}
+
+# ── Run ───────────────────────────────────────────────────────────────────────────
+echo "eval → $OUT"
+echo "  binary: $BINARY"
+printf '%s\n' "$PING" | scrub | sed 's/^/  /'
+
+for model in "${MODELS[@]}"; do
+    echo
+    echo "model: ${model:-(server default)}"
+    server_start
+    if ! handshake; then
+        echo "  handshake failed — recording this model's cases as failures" >&2
+        # NOT `continue` with nothing written. A model that never starts used to vanish,
+        # and a two-model comparison would publish one side of itself at exit 0.
+        for case_file in "${CASE_FILES[@]}"; do
+            python3 - "$case_file" "$model" <<'PYEOF' | python3 "$RPC" append --out "$STAGING"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for c in doc["cases"]:
+    print(json.dumps({"case": c["id"], "tool": c["tool"], "model_requested": sys.argv[2] or None,
+                      "model": None, "elapsed_seconds": None, "finish_reason": None,
+                      "text": None, "checks": [], "mechanical_ok": None,
+                      "human_review": [], "error": "transport: session handshake failed"},
+                     ensure_ascii=False))
+PYEOF
+        done
+        server_stop
+        continue
+    fi
+
+    for case_file in "${CASE_FILES[@]}"; do
+        # Readability and non-emptiness were settled in the preflight above, so there is no
+        # skip path left here to fail open through.
+        count=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["cases"]))' "$case_file")
+        idx=0
+        while [ "$idx" -lt "$count" ]; do
+            RPC_ID=$((RPC_ID + 1))
+            request=$(python3 "$RPC" request \
+                          --case-file "$case_file" --index "$idx" --id "$RPC_ID" --model "$model")
+            # The ROW carries the id verbatim — scored rows and the owed pairs do, and an error row
+            # with a sanitized id would never match its pair. Only the terminal line is sanitized.
+            case_id_raw=$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["id"]))' "$case_file" "$idx")
+            case_id=$(printf '%s' "$case_id_raw" | scrub_line)
+            case_tool=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cases"][int(sys.argv[2])]["tool"])' "$case_file" "$idx")
+            printf '  %-28s ' "$case_id"
+
+            if ! rpc_send "$request" || ! rpc_await "$RPC_ID"; then
+                echo "ERROR (no response)"
+                # WRITE A ROW. Round 1 found the guard failing open when every call
+                # returned a tool error; round 2 found the same failure one layer out,
+                # because a TRANSPORT failure produced no row at all and the verdict
+                # reasons only about rows that exist. Four of five cases could vanish and
+                # `make eval` still exited 0. An error row is how the verdict learns.
+                python3 -c '
+import json, sys
+print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": sys.argv[3] or None,
+                  "model": None, "elapsed_seconds": None, "finish_reason": None,
+                  "text": None, "checks": [], "mechanical_ok": None,
+                  "human_review": [], "error": "transport: no response from the server"},
+                 ensure_ascii=False))' "$case_id_raw" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
+                idx=$((idx + 1))
+                server_alive || break
+                continue
+            fi
+
+            if ! row=$(printf '%s' "$RESPONSE" | python3 "$RPC" score \
+                           --case-file "$case_file" --index "$idx" \
+                           --model-requested "$model" --check "$CHECK"); then
+                echo "ERROR (scoring failed)"
+                python3 -c '
+import json, sys
+print(json.dumps({"case": sys.argv[1], "tool": sys.argv[2], "model_requested": sys.argv[3] or None,
+                  "model": None, "elapsed_seconds": None, "finish_reason": None,
+                  "text": None, "checks": [], "mechanical_ok": None,
+                  "human_review": [], "error": "scoring failed"},
+                 ensure_ascii=False))' "$case_id_raw" "$case_tool" "$model" | python3 "$RPC" append --out "$STAGING"
+                idx=$((idx + 1))
+                continue
+            fi
+            # A failed append used to leave the row counter incremented anyway, so the
+            # guard counted attempts rather than writes.
+            printf '%s\n' "$row" | python3 "$RPC" append --out "$STAGING" || { echo "ERROR (could not write row)"; exit 1; }
+            # rpc.py rowline, not an inline `python3 -c`: round 4 put `re.sub` one line above
+            # `import re` in the inline version, on the tool-error branch, which no test could
+            # reach — so every recorded tool error printed a traceback. The line is now a
+            # function with a test that reaches that branch.
+            printf '%s\n' "$row" | python3 "$RPC" rowline
+            idx=$((idx + 1))
+        done
+        server_alive || break
+    done
+    server_stop
+done
+
+# Publish atomically. The first version truncated the destination BEFORE the first model
+# ran, so a run that died part-way had already destroyed the previous results — and the
+# survivor was indistinguishable from a complete single-model file, because nothing in it
+# says how many rows it should have. Staging plus a rename means the destination is only
+# ever replaced by a run that reached this line.
+# THE DESTINATION ONLY EVER HOLDS A COMPLETE RUN.
+#
+# Round 2: a run that measured nothing still wiped results.jsonl, destroying the previous
+# run's evidence — and the file is gitignored, so there was nothing to fall back to. The
+# first fix (publish when staging is non-empty) stopped working the moment transport
+# failures started writing error rows: staging was non-empty again, and a five-row file of
+# which four are errors would have replaced a complete one.
+#
+# So the gate is what the file will MEAN, not whether it has bytes: at least one measured
+# reply and no failures. Anything else stays under `.partial`, named for what it is, and
+# $OUT keeps the last complete run. This is the property the README claims when it calls
+# the file a measurement record — a silently truncated record is worse than none, and
+# nothing inside it says how many rows it should have had.
+# ONE definition of "complete", and it lives in rpc.py (`completeness()`), asked here for the
+# publish decision and again inside summarize for the verdict. Round 4 had two: this gate said
+# "measured>=1 and no errors", summarize said "and total == owed", and the mv between them
+# meant a short run could publish. Now the count is consulted BEFORE anything is replaced.
+if ! INCOMPLETE=$(python3 "$RPC" complete --out "$STAGING" --expected "$EXPECTED_ROWS" --expect-rows "$EXPECT_ROWS" 2>&1); then
+    echo >&2
+    echo "  incomplete run ($INCOMPLETE) — $OUT left as it was." >&2
+    echo "  What this run did produce: $STAGING" >&2
+    python3 "$RPC" summarize --out "$STAGING" --expected "$EXPECTED_ROWS" --expect-rows "$EXPECT_ROWS"
+    exit 1
+fi
+mv "$STAGING" "$OUT" || { echo "could not publish to $OUT; rows kept at $STAGING" >&2; exit 1; }
+
+echo
+python3 "$RPC" summarize --out "$OUT" --expected "$EXPECTED_ROWS" --expect-rows "$EXPECT_ROWS"
+RC=$?
+echo "  rows: $OUT"
+exit $RC

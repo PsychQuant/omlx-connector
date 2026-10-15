@@ -85,8 +85,12 @@ cap truncates the answer before it starts.
 instructions that stop the model from prefacing its answer with commentary.
 
 **`local_classify` returns your own category strings.** It matches the model's reply
-back onto the list you supplied and reports `matched: false` when nothing lines up,
-rather than inventing a category.
+back onto the list you supplied: an exact match (after trimming surrounding punctuation,
+quotes and brackets) wins; otherwise the **one** category the reply contains — which is
+how a decorated reply such as "Category: bug." resolves; otherwise
+`matched: false`. A reply that names two of your categories — "not a bug, a feature
+request" — is `matched: false` too: the model has not chosen, and guessing the first
+one mentioned scored wrong answers as right. It never invents a category.
 
 **Batch work benefits most.** One summary is barely worth the cold start; forty
 transcript segments are exactly what this is for, since the model stays loaded across
@@ -98,3 +102,21 @@ Every tool fails with a message naming the fix: start oMLX with `open -a oMLX` (
 `omlx start`). If oMLX is not installed at all, say so plainly rather than silently
 falling back to processing the content in the cloud — that fallback is precisely the
 outcome the user was trying to avoid.
+
+## When these tools are the wrong shape for the job
+
+These tools delegate one piece of work at a time, and you remain the agent — which
+means the material passes through your context on the way in and out. That is fine
+for a transcript to summarize, and wrong for a whole session's work on material that
+must not leave the machine at all.
+
+For that, the same module ships the other arrangement: **`omlx-claude`** runs Claude
+Code itself on the local model, so nothing reaches a cloud API for the whole session.
+Suggest it when the user is about to hand over a body of sensitive material large
+enough that delegating piece by piece is the wrong unit — an entire corpus to work
+through, a long session under NDA, work that has to continue offline.
+
+Name the trade honestly when you do: every part of that session runs at the local
+model's ability, including the planning, and the two failure modes above (fluent
+wrong output, mixed scripts) then apply to the whole conversation rather than to one
+delegated answer. It is not strictly better — it is a different bargain.

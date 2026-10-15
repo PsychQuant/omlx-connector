@@ -207,3 +207,137 @@ final class ToolDispatchTests: XCTestCase {
         }
     }
 }
+
+// MARK: - The served model id, not the requested one
+
+/// `CompletionResult.model` used to echo whatever was asked for: `resolveModel(explicit:)`
+/// returns a non-empty `explicit` unchanged, `ChatResponse` never decoded the response's
+/// own `model` field, and the result was built from the request. So on the `--model` path
+/// the two were identical by construction.
+///
+/// That silently defeats issue #1's "record the model id with every result": the eval
+/// harness's `model` and `model_requested` columns were the same value in all 15 rows of
+/// the first cross-size run, while `scripts/eval/README.md` described them as "what oMLX
+/// actually served vs. what was asked for". An alias, a quantization the server picked, or
+/// a fallback would all have gone unrecorded.
+final class ServedModelIdTests: XCTestCase {
+    func testDecodesTheModelIdTheServerReports() throws {
+        let json = """
+        {"model":"mlx-community--Qwen3-4B-Instruct-2507-4bit",
+         "choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ChatResponse.self, from: json)
+        XCTAssertEqual(decoded.model, "mlx-community--Qwen3-4B-Instruct-2507-4bit")
+    }
+
+    /// oMLX is not required to echo it. Absent must decode cleanly as nil so the caller
+    /// can fall back to the requested id rather than the whole call failing.
+    func testAModelIdIsOptional() throws {
+        let json = """
+        {"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ChatResponse.self, from: json)
+        XCTAssertNil(decoded.model)
+    }
+
+    /// Round 2 found the *call site* untested: reverting `decoded.model ?? resolvedModel`
+    /// to plain `resolvedModel` left all 133 tests green. The decode was covered; the line
+    /// that uses it was not. That is the `main.swift` shape `CLAUDE.md` already records —
+    /// "the decision function is tested and mutation-proven; its call site is not" — one
+    /// level down, reproduced by the round that cited it.
+    ///
+    /// The fix `CLAUDE.md` prescribes for that shape is to shrink what has to be checked by
+    /// hand rather than only warn about it: move the decision into a testable function and
+    /// leave the call site a call. `OmlxClient.servedModel` is that function.
+    func testServedModelPrefersWhatTheServerReported() {
+        XCTAssertEqual(
+            OmlxClient.servedModel(reported: "mlx-community--Qwen3-4B-Instruct-2507-4bit",
+                                   requested: "qwen3-4b"),
+            "mlx-community--Qwen3-4B-Instruct-2507-4bit")
+    }
+
+    func testServedModelFallsBackToTheRequestedIdWhenTheServerIsSilent() {
+        XCTAssertEqual(OmlxClient.servedModel(reported: nil, requested: "qwen3-4b"), "qwen3-4b")
+    }
+
+    /// An empty string is not a report. Without this, a server echoing `"model": ""` would
+    /// erase the one id the row has.
+    func testServedModelIgnoresAnEmptyReport() {
+        XCTAssertEqual(OmlxClient.servedModel(reported: "", requested: "qwen3-4b"), "qwen3-4b")
+    }
+}
+
+// MARK: - Classify matching: exact, then unique containment, then unmatched
+
+/// `handleClassify` used `categories.first { raw.contains($0) }` — the first offered label
+/// appearing ANYWHERE in the reply, in the caller's list order. So "This is not a bug — it is
+/// a feature request" resolved to `bug`, and the eval harness's accuracy signal scored a wrong
+/// answer as correct (round-4 verify, requirement 6a). The rule is now: an exact match wins;
+/// otherwise the UNIQUE contained label; otherwise unmatched.
+final class ClassifyMatchingTests: XCTestCase {
+    private func classify(_ reply: String, _ categories: [String]) async throws -> String {
+        let server = await OmlxConnectorServer(client: StubClient(text: reply))
+        return try await server.executeToolCall(
+            name: "local_classify",
+            arguments: ["text": .string("x"), "categories": .array(categories.map { .string($0) })])
+    }
+
+    func testTwoLabelsMentionedIsUnmatched() async throws {
+        let json = try await classify("This is not a bug — it is a feature request.",
+                                      ["bug", "feature request", "question"])
+        XCTAssertTrue(json.contains("\"matched\" : false"), json)
+    }
+
+    func testExactMatchWinsOverContainmentOfAShorterLabel() async throws {
+        // Containment alone picks "bug" (it appears first and is contained); the reply IS
+        // "bug report", so that is the answer.
+        let json = try await classify("bug report", ["bug", "bug report"])
+        XCTAssertTrue(json.contains("\"category\" : \"bug report\""), json)
+    }
+
+    func testDecoratedSingleLabelStillMatches() async throws {
+        let json = try await classify("Category: bug.", ["bug", "feature request"])
+        XCTAssertTrue(json.contains("\"category\" : \"bug\""), json)
+        XCTAssertTrue(json.contains("\"matched\" : true"), json)
+    }
+
+    /// The clause round 4's finding turns on: a contained label that is a substring of another
+    /// contained label does not count. Round 5 shipped it with no test — replacing it with
+    /// plain unique-containment left all 141 tests green. This is the one case where the two
+    /// rules disagree.
+    func testShorterLabelInsideLongerOneDoesNotMakeItAmbiguous() async throws {
+        let json = try await classify("It's a bug report.", ["bug", "bug report"])
+        XCTAssertTrue(json.contains("\"category\" : \"bug report\""), json)
+        XCTAssertTrue(json.contains("\"matched\" : true"), json)
+    }
+
+    func testHonestRefusalNamingTheOptionsIsUnmatched() async throws {
+        // The desired outcome for out-of-domain input, and the harness's 6b case.
+        let json = try await classify("neither a bug nor a feature request", ["bug", "feature request"])
+        XCTAssertTrue(json.contains("\"matched\" : false"), json)
+    }
+}
+
+extension ServedModelIdTests {
+    /// `.whitespaces` does not include newlines, so `"model": "\n"` passed the emptiness
+    /// guard and erased the requested id (round-4 verify).
+    func testServedModelIgnoresANewlineOnlyReport() {
+        XCTAssertEqual(OmlxClient.servedModel(reported: "\n", requested: "qwen3-4b"), "qwen3-4b")
+        XCTAssertEqual(OmlxClient.servedModel(reported: "\r\n  ", requested: "qwen3-4b"), "qwen3-4b")
+    }
+}
+
+
+// MARK: - Terminal sanitizer for server-authored strings printed by --ping
+
+/// `--ping` prints model ids the server reported. Round 5's harness stripped C0 from that
+/// banner in bash and could not strip LF (the banner is multi-line) or C1 (byte-level tr on
+/// UTF-8 would corrupt CJK ids). The ids are sanitized where they are printed instead.
+final class TerminalSanitizerTests: XCTestCase {
+    func testStripsC0C1AndDELButKeepsOrdinaryText() {
+        XCTAssertEqual(sanitizedForTerminal("m\u{1B}[2K\u{9B}x\u{7F}\ny"), "m\u{FFFD}[2K\u{FFFD}x\u{FFFD}\u{FFFD}y")
+        XCTAssertEqual(sanitizedForTerminal("mlx-community--Qwen3-4B-Instruct-2507-4bit"),
+                       "mlx-community--Qwen3-4B-Instruct-2507-4bit")
+        XCTAssertEqual(sanitizedForTerminal("模型-繁體"), "模型-繁體")
+    }
+}

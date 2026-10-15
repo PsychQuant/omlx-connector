@@ -1,4 +1,5 @@
 import Foundation
+import OmlxConnectorCore
 
 // MARK: - Configuration
 
@@ -19,20 +20,19 @@ enum OmlxConfig {
         guard let url = URL(string: raw), let host = url.host else {
             throw OmlxError.invalidConfiguration("OMLX_BASE_URL is not a valid URL: \(raw)")
         }
-        let allowRemote = environment["OMLX_ALLOW_REMOTE"] == "1"
+        let allowRemote = LoopbackPolicy.allowsRemote(environment: environment)
         if !isLoopback(host) && !allowRemote {
             throw OmlxError.nonLoopbackRefused(host: host)
         }
         return url
     }
 
-    /// `127.0.0.1` is preferred over `localhost` in the default because the latter
-    /// can resolve to `::1` first, which a server bound only to IPv4 will refuse.
-    static func isLoopback(_ host: String) -> Bool {
-        let normalized = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
-        if normalized == "localhost" || normalized == "::1" { return true }
-        return normalized.hasPrefix("127.")
-    }
+    /// Forwards to `LoopbackPolicy`, which both entry points share.
+    ///
+    /// The implementation moved to `OmlxConnectorCore` when `omlx-claude` turned out to
+    /// have shipped without any loopback check at all. This name is kept because it is
+    /// the vocabulary the rest of this file and its tests use.
+    static func isLoopback(_ host: String) -> Bool { LoopbackPolicy.isLoopback(host) }
 
     static func resolveTimeout(
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -106,7 +106,9 @@ private struct ChatRequest: Encodable {
     let chat_template_kwargs: TemplateKwargs?
 }
 
-private struct ChatResponse: Decodable {
+/// Internal, not private: a test decodes it directly. The alternative was leaving the
+/// served-model-id fix uncovered, which is how the defect it fixes got in.
+struct ChatResponse: Decodable {
     struct Choice: Decodable {
         struct Message: Decodable {
             let content: String?
@@ -126,6 +128,16 @@ private struct ChatResponse: Decodable {
 
     let choices: [Choice]
     let usage: Usage?
+    /// What the server says it actually served. Optional because oMLX is not required to
+    /// echo it, and a missing key must not fail the whole call.
+    ///
+    /// Without this, `CompletionResult.model` was built from the *request*: an explicit
+    /// `model` argument comes back out of `resolveModel(explicit:)` unchanged, so the
+    /// requested and served ids were identical by construction. Issue #1 asks for the
+    /// model id to be recorded with every result precisely so results are comparable; an
+    /// echo of the request records nothing an alias, a server-side fallback, or a
+    /// different quantization could contradict.
+    let model: String?
 }
 
 private struct ErrorEnvelope: Decodable {
@@ -248,7 +260,7 @@ actor OmlxClient: OmlxClienting {
         return CompletionResult(
             text: text,
             reasoning: choice.message.reasoning_content,
-            model: resolvedModel,
+            model: Self.servedModel(reported: decoded.model, requested: resolvedModel),
             finishReason: choice.finish_reason,
             completionTokens: decoded.usage?.completion_tokens,
             elapsedSeconds: decoded.usage?.total_time
@@ -256,6 +268,23 @@ actor OmlxClient: OmlxClienting {
     }
 
     // MARK: Internals
+
+    /// Which model id to record: what the server says it served, falling back to what we
+    /// asked for. They usually agree; the times they do not are exactly the times the
+    /// recorded id matters, which is why issue #1 asks for it with every result.
+    ///
+    /// Internal and static so it can be tested. The previous form was an inline
+    /// `decoded.model ?? resolvedModel` at the call site, and reverting it to plain
+    /// `resolvedModel` left the entire suite green — the decode was covered, the line using
+    /// it was not.
+    static func servedModel(reported: String?, requested: String) -> String {
+        // `.whitespacesAndNewlines`, not `.whitespaces`: the latter has no LF, so a server
+        // echoing `"model": "\n"` passed this guard and erased the requested id (round 4).
+        guard let reported, !reported.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return requested
+        }
+        return reported
+    }
 
     private func resolveModel(explicit: String?) async throws -> String {
         if let explicit, !explicit.isEmpty { return explicit }

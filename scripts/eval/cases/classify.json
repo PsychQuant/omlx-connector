@@ -1,0 +1,100 @@
+{
+  "_comment": [
+    "local_classify cases. The gold labels live in data (`expect_row.category`), not prose.",
+    "",
+    "Three mechanisms, doing three different jobs:",
+    "  expect_row.category — is the answer CORRECT, independent of how it was worded. The",
+    "                        server has matched the reply onto the caller's list, so this",
+    "                        survives decoration ('Category: bug' still yields bug).",
+    "  category_member     — did the model answer with a BARE label as instructed.",
+    "  expect_row.matched  — did the server match anything at all; false is the desired",
+    "                        outcome for content that fits none of the offered labels.",
+    "`label_is` (exists in check.py) is correct AND bare, conjoined — not used by any shipped",
+    "case, because a right answer that was decorated fails it identically to a wrong one.",
+    "",
+    "The server's matching rule matters to all three and changed in round 5: exact match",
+    "wins; otherwise the UNIQUE contained label; otherwise unmatched. Under the old rule —",
+    "first offered label contained anywhere — 'This is not a bug, it is a feature request'",
+    "resolved to `bug` and the accuracy check scored a wrong answer as correct."
+  ],
+  "cases": [
+    {
+      "id": "classify-negative-hedged",
+      "why": "Issue #1 records this exact failure: a 0.6B model classified 'the effect size was too small and it disappeared after two weeks' as POSITIVE. The sentiment is negative and stated plainly; only the academic register is neutral. This is the regression case the issue asks for.",
+      "tool": "local_classify",
+      "arguments": {
+        "text": "The effect size was too small and it disappeared after two weeks.",
+        "categories": [
+          "positive",
+          "negative",
+          "neutral"
+        ]
+      },
+      "expect": {
+        "category_member": {
+          "categories": [
+            "positive",
+            "negative",
+            "neutral"
+          ]
+        }
+      },
+      "human_review": [
+        "Issue #1 observed a 0.6B answering `positive` here. row.category now decides correct/incorrect; what is left for you is whether a wrong answer was a near miss (neutral) or an inversion (positive).",
+        "If category_member FLAGs while row.category stays green, the model was right but decorated its answer ('Category: negative.'). If both FLAG, read `text`: since round 5 a reply naming two options is unmatched, so 'not positive; negative' — a right answer — lands here too. That is the safe direction for replies naming two options (a FLAG on a right answer). It is not a guarantee: a wrong answer that names exactly one label — 'This is not negative.' names only negative — still matches it, and row.category passes. The harness does not read negation; a PASS here is not proof the answer was right. Read `text`."
+      ],
+      "expect_row": {
+        "category": "negative"
+      }
+    },
+    {
+      "id": "classify-bare-label-discipline",
+      "why": "The tool's prompt says 'Reply with the category name alone, copied exactly as written above.' Small models decorate ('Category: bug', 'I would say bug.'). The server matches decorated replies back onto the list, so `matched` stays true — which is why raw_response, not category, is what gets checked here.",
+      "tool": "local_classify",
+      "arguments": {
+        "text": "The app crashes on launch whenever the config file is missing.",
+        "categories": [
+          "bug",
+          "feature request",
+          "question"
+        ]
+      },
+      "expect": {
+        "category_member": {
+          "categories": [
+            "bug",
+            "feature request",
+            "question"
+          ]
+        }
+      },
+      "human_review": [
+        "Compare `text` (the raw reply) with `category` (what the server matched it to). A gap is decoration the caller never asked for — it shows as category_member FLAG while row.category stays green, which is the 'right but undisciplined' combination.",
+        "This is the case where a 0.6B answered `feature request`: correct-looking row, wrong answer, until the gold label was in data. Before round 5, 'This is not a bug — it is a feature request' would have matched `bug` (first offered label contained anywhere) and scored CORRECT; it is now unmatched and FLAGs."
+      ],
+      "expect_row": {
+        "category": "bug"
+      }
+    },
+    {
+      "id": "classify-none-of-the-above",
+      "why": "Issue #1: 'Whether matched: false fires when it should.' Nothing in the offered list fits, so a well-behaved model has no honest bare label to give. The expectation is a ROW fact (matched must be false), not a text fact — scoring it with category_member pointed the verdict backwards: the desired outcome failed and forcing a label passed.",
+      "tool": "local_classify",
+      "arguments": {
+        "text": "測試測試測試",
+        "categories": [
+          "bug",
+          "feature request"
+        ]
+      },
+      "expect": {},
+      "human_review": [
+        "A forced label that matches is WORSE than an unmatched reply: it looks clean and is wrong. That is a mechanical failure here, not a note.",
+        "Since round 5 the server's matching is: exact label wins; otherwise the UNIQUE label the reply contains; otherwise unmatched. So an honest refusal that names the options it rejects — 'neither a bug nor a feature request' — is unmatched, which is the desired outcome here. LIMIT that remains: a reply naming exactly one option in the course of rejecting it ('not a bug, something else') still matches it. Read `text` before believing either verdict."
+      ],
+      "expect_row": {
+        "matched": false
+      }
+    }
+  ]
+}

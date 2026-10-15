@@ -11,3 +11,41 @@ mcpb/server/*
 !mcpb/server/.gitkeep
 mcpb/*.mcpb
 mcpb/*.mcpb.sha256
+
+# IDD writes an attachments manifest whenever an issue is diagnosed — an empty one
+# when the issue has no attachments — so this directory regenerates on its own.
+# Deliberately narrow: `.claude/.idd/local.json` and `.claude/rules/` are tracked,
+# and both `.claude/` and `.claude/.idd/` would cover them. (#13)
+.claude/.idd/attachments/
+
+# Editor-local VS Code state. `launch.json` is carved back in deliberately: it holds
+# only `${workspaceFolder:...}` and this repo's own build targets — portable, no machine
+# paths, no personal data — and it was already tracked before this rule existed (f1f1a27).
+#
+# The glob is `.vscode/*`, NOT `.vscode/`, and the difference is load-bearing. Excluding the
+# DIRECTORY makes the `!` line inert: git does not enumerate an excluded directory, so
+# patterns for files inside it are never evaluated. Verified in a scratch repo — with
+# `.vscode/` both files are ignored and the carve-out silently does nothing; with `.vscode/*`
+# only settings.json is. Same trap as the `.claude/.idd/` chain discussed in #13.
+#
+# To drop launch.json instead: delete the `!` line and `git rm --cached .vscode/launch.json`. (#4)
+.vscode/*
+!.vscode/launch.json
+
+# Measurement output from `make eval`. A committed measurement goes stale silently,
+# and a stale one is worse than none — regenerate it instead (see scripts/eval/README.md).
+scripts/eval/results.jsonl
+
+# Bytecode from running check.py / rpc.py — and `make test` now produces some, because
+# eval-checks.test.sh loads check.py through importlib. It is build output, not source.
+# (`git add -A scripts/eval` did sweep one into the harness's first commit; that commit was
+# amended before it was reviewed, so no .pyc appears in the history. Saying "was committed"
+# here described a state that no longer existed — a small instance of the message-shaped
+# bug this repo keeps producing.)
+__pycache__/
+*.pyc
+
+# Partial results from an interrupted `make eval`. run.sh deliberately leaves these
+# beside the destination so an interrupted run does not lose what it measured — which
+# means the default failure path drops one inside the repo, carrying verbatim reply text.
+scripts/eval/results.jsonl.partial*

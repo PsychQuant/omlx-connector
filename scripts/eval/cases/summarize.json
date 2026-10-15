@@ -1,0 +1,118 @@
+{
+  "_comment": [
+    "Cases are DATA — but only for mechanisms that already exist. Adding a case that uses",
+    "`label_is`, `expect_row`, or a tool whose payload is not render()-shaped takes code, and",
+    "an earlier version of this comment promised otherwise. See README.md, 'Adding cases'.",
+    "",
+    "`expect` names checks in check.py and is machine-judged. `human_review` is NOT judged by",
+    "anything: it lists what a person has to decide by reading the reply. Issue #1 asks for",
+    "coverage and faithfulness to be 'recorded for human review', and an LLM-as-judge would",
+    "only replace a judgement with another black box that itself needs verifying.",
+    "",
+    "Two cases are drawn from failures issue #1 already documents, deliberately: five cases a",
+    "small model handles perfectly would measure nothing. All source text is synthetic — no",
+    "third-party content goes into this repo."
+  ],
+  "cases": [
+    {
+      "id": "meeting-coverage-2sentence",
+      "why": "Issue #1: a 0.6B model copied the opening sentence verbatim and dropped the three substantive items after it. The source below is shaped for exactly that failure — a bland scene-setting first sentence followed by three decisions that carry all the information.",
+      "tool": "local_summarize",
+      "arguments": {
+        "max_sentences": 2,
+        "text": "The weekly project meeting was held on Tuesday afternoon in the usual room. The team agreed to move the submission deadline from 15 March to 5 April, because the pilot data arrived late. Funding for the second research assistant was approved at 60% of the requested amount. Two members objected to dropping the control condition, so that decision was deferred to next week."
+      },
+      "expect": {
+        "sentence_count": {
+          "max": 2
+        },
+        "no_preamble": {}
+      },
+      "human_review": [
+        "Coverage: of the three load-bearing items — deadline moved to 5 April, RA funding approved at 60%, control-condition decision deferred — how many survive?",
+        "Does the summary open by restating the meeting time and room, i.e. spend its budget on the one sentence that carries nothing?"
+      ]
+    },
+    {
+      "id": "traditional-chinese-purity",
+      "why": "Issue #1: a 0.6B model asked for Traditional Chinese returned mixed Traditional and Simplified within one sentence, and on another run answered a Chinese prompt in English. The first is caught mechanically; the second is not — see human_review.",
+      "tool": "local_summarize",
+      "arguments": {
+        "max_sentences": 2,
+        "language": "繁體中文",
+        "text": "本週的專案會議在週二下午於原本的會議室舉行。團隊同意把投稿期限從三月十五日延到四月五日，因為前導資料延遲送達。第二位研究助理的經費核准了申請金額的六成。兩位成員反對取消控制組，這項決定延到下週再議。"
+      },
+      "expect": {
+        "script_purity": {
+          "script": "traditional"
+        },
+        "sentence_count": {
+          "max": 2
+        },
+        "no_preamble": {}
+      },
+      "human_review": [
+        "Language: is the reply in Chinese at all? A reply that switched to English passes script_purity trivially, because there are no Han characters in it to be Simplified.",
+        "Coverage: same three load-bearing items as the English case above."
+      ]
+    },
+    {
+      "id": "numbers-one-sentence",
+      "why": "The tightest length constraint the tool accepts, over a source dense with figures. Length compliance and faithfulness pull against each other here: one sentence is not enough room for all three numbers, so what gets dropped is informative.",
+      "tool": "local_summarize",
+      "arguments": {
+        "max_sentences": 1,
+        "text": "The pilot study recruited 48 participants across three sites. The primary effect was 0.31 standard deviations, with a 95% confidence interval spanning 0.02 to 0.60. Attrition reached 12.5% by the eight-week follow-up."
+      },
+      "expect": {
+        "sentence_count": {
+          "max": 1
+        },
+        "no_preamble": {}
+      },
+      "human_review": [
+        "Faithfulness: is every number that appears in the reply actually in the source? An invented figure is worse than an omitted one.",
+        "If a number was dropped, was it the least load-bearing one?"
+      ]
+    },
+    {
+      "id": "focus-open-questions",
+      "why": "The `focus` argument is appended to the instruction verbatim (Server.swift handleSummarize). Whether a small model honours it, ignores it, or lets it displace the summary entirely is the thing being measured — and only a human can tell those apart.",
+      "tool": "local_summarize",
+      "arguments": {
+        "max_sentences": 3,
+        "focus": "open questions and unresolved decisions",
+        "text": "The weekly project meeting was held on Tuesday afternoon in the usual room. The team agreed to move the submission deadline from 15 March to 5 April, because the pilot data arrived late. Funding for the second research assistant was approved at 60% of the requested amount. Two members objected to dropping the control condition, so that decision was deferred to next week. Nobody had yet checked whether the revised deadline clears the funder's reporting date."
+      },
+      "expect": {
+        "sentence_count": {
+          "max": 3
+        },
+        "no_preamble": {}
+      },
+      "human_review": [
+        "Did the focus land? The two genuinely open items are the control condition and the funder's reporting date; the deadline and the funding were settled.",
+        "Or did the focus get ignored and a generic summary come back instead?"
+      ]
+    },
+    {
+      "id": "short-source-preamble-bait",
+      "why": "A source far shorter than the sentence budget. This is where padding is most tempting, so it is the strongest test of the outputOnlyRule system prompt the server sends on every call.",
+      "tool": "local_summarize",
+      "arguments": {
+        "max_sentences": 3,
+        "text": "The server refused every request between 09:14 and 09:41 because its TLS certificate had expired. Renewal is automated but the cron entry had been removed during an unrelated cleanup."
+      },
+      "expect": {
+        "no_preamble": {},
+        "sentence_count": {
+          "max": 3
+        }
+      },
+      "human_review": [
+        "Did the model pad to fill the sentence budget with restatement, or stop when it ran out of content?",
+        "Is the causal chain intact — expired certificate, and the removed cron entry as the reason it expired?"
+      ]
+    }
+  ]
+}

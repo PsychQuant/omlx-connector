@@ -9,8 +9,8 @@
   "plugins": [
     {
       "name": "omlx-connector",
-      "version": "0.2.1",
-      "description": "Delegate text work to a local model on oMLX — summarize, rewrite, and classify content that must not leave your machine",
+      "version": "0.3.0",
+      "description": "Connect oMLX to Claude Code — run the agent itself on a local model, or delegate only what must not leave your machine",
       "author": {
         "name": "Che Cheng"
       },

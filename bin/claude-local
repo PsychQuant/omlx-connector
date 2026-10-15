@@ -1,57 +1,33 @@
 #!/usr/bin/env bash
-# claude-local — run Claude Code itself on a local model served by oMLX.
+# Deprecated. Renamed to `omlx-claude` in 0.3.0.
 #
-# This is usage 1: the local model *is* the agent. Claude is not involved.
-# For usage 2 — Claude answering you and handing selected work to a local model —
-# install the MCP server instead; see the README.
+# This shim exists because the old name is already sitting in people's ~/bin —
+# the README used to tell them to copy it there by hand — and scripts may call
+# it. It forwards everything and will be REMOVED IN 0.4.0.
 #
-# Why this wrapper exists (both are upstream bugs; it retires when they are fixed):
-#
-#   1. `omlx launch claude` passes ANTHROPIC_BASE_URL as an environment variable,
-#      but Claude Code's documented precedence puts a settings-file `env` block
-#      ABOVE inherited environment variables. Anyone whose ~/.claude/settings.json
-#      sets ANTHROPIC_BASE_URL — common with gateway, proxy, or rate-limiting
-#      plugins — has the launcher's value silently overridden, and requests go to
-#      whatever that points at instead of the local server. The failure surfaces as
-#      `401 Invalid bearer token`, which reads as if oMLX rejected you, while the
-#      oMLX log shows the request never arrived. Reported as jundot/omlx#2715.
-#
-#      Fix: pass the same values through --settings, a CLI argument, which outranks
-#      user settings and applies only to this launch. The user's own config is
-#      never touched.
-#
-#   2. On plans where Opus is auto-upgraded to a 1M context window, the model ID
-#      picks up a `[1m]` suffix. Per Claude Code's docs, an unrecognized ID
-#      containing `[1m]` is assumed to have a 1M window and CLAUDE_CODE_MAX_CONTEXT_TOKENS
-#      stops applying — so the window the launcher declared is discarded.
-#      Reported as jundot/omlx#2716.
-#
-#      Fix: set CLAUDE_CODE_DISABLE_1M_CONTEXT=1.
-#
-# Usage:
-#   claude-local                             # pick a model interactively
-#   claude-local --model <model-id>          # use a specific model
-#   claude-local --model X -p "question"     # non-interactive
-#   OMLX_URL=http://host:port claude-local   # point at a different oMLX server
+# The replacement is not a rename of this file. `omlx-claude` is a compiled
+# command shipped as a release asset and installed by the plugin, and it fixes
+# things this script got wrong: it probes the address --host/--port actually
+# select rather than always 127.0.0.1:8000, it covers the launcher's fixed
+# environment keys instead of only four of them, it reports the model-dependent
+# keys it cannot cover, and it says something when oMLX moves past the version
+# the workaround was verified against.
 
 set -euo pipefail
 
-OMLX_URL="${OMLX_URL:-http://127.0.0.1:8000}"
-OMLX_TOKEN="${OMLX_TOKEN:-omlx}"
+echo "claude-local: deprecated — renamed to 'omlx-claude'. This shim is removed in 0.4.0." >&2
 
-if ! curl -sf --max-time 5 "${OMLX_URL}/v1/models" >/dev/null 2>&1; then
-  echo "No oMLX server responding at ${OMLX_URL}" >&2
-  echo "Start it with: open -a oMLX   (or: omlx start)" >&2
-  exit 1
+if command -v omlx-claude >/dev/null 2>&1; then
+    exec omlx-claude "$@"
 fi
 
-SETTINGS=$(OMLX_URL="$OMLX_URL" OMLX_TOKEN="$OMLX_TOKEN" python3 -c '
-import json, os
-print(json.dumps({"env": {
-    "ANTHROPIC_BASE_URL": os.environ["OMLX_URL"],
-    "ANTHROPIC_AUTH_TOKEN": os.environ["OMLX_TOKEN"],
-    "ANTHROPIC_API_KEY": "",
-    "CLAUDE_CODE_DISABLE_1M_CONTEXT": "1",
-}}))')
+cat >&2 <<'EOF'
+claude-local: omlx-claude is not installed.
 
-exec omlx launch claude --settings "$SETTINGS" "$@"
+  Plugin users:  it installs automatically at session start; start a new session.
+  Everyone else: download it from
+                 https://github.com/PsychQuant/omlx-connector/releases
+                 into ~/bin and `chmod +x` it.
+  From a clone:  make install-omlx-claude
+EOF
+exit 1
